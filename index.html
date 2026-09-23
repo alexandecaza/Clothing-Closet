@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Clothing Closet</title>
+  <meta name="description" content="Free donated clothing for foster families. Browse what's available and request what fits.">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#e4e6d9" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#151b18" media="(prefers-color-scheme: dark)">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Zilla+Slab:wght@500;600;700&display=swap">
+  <link rel="stylesheet" href="css/styles.css">
+  <script type="module" src="js/catalog.js"></script>
+</head>
+<body class="page-catalog">
+  <a class="skip-link" href="#catalog">Skip to the clothes</a>
+
+  <header class="site-header">
+    <div class="wrap header-inner">
+      <div class="brand">
+        <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><path d="M6 11.5 14.5 3H27a2 2 0 0 1 2 2v12.5L20.5 26a2 2 0 0 1-2.8 0L6 14.3a2 2 0 0 1 0-2.8Z"/><circle cx="22.5" cy="9.5" r="2.4"/></svg>
+        <div>
+          <p class="brand-name" id="org-name">Clothing Closet</p>
+          <p class="brand-tagline">Free clothes for foster families</p>
+        </div>
+      </div>
+      <button type="button" class="btn btn-primary list-button" id="open-list" aria-haspopup="dialog">
+        Request list <span class="count-pill" id="list-count">0/5</span>
+      </button>
+    </div>
+  </header>
+
+  <main id="main" class="wrap catalog-main">
+    <h1 class="intro-title">What's on the rack</h1>
+    <p class="intro">Add what fits to your request list and send it — no account needed. Everything is free; a coordinator will contact you to arrange pickup.</p>
+
+    <div id="setup"></div>
+
+    <section class="filters" aria-label="Filters">
+      <div class="ruler-block">
+        <div class="ruler-head">
+          <h2 class="filter-heading" id="size-heading">Size</h2>
+          <span class="ruler-summary" id="size-summary">Any size — tap one or more</span>
+          <button type="button" class="link-button" id="clear-sizes" hidden>Clear sizes</button>
+        </div>
+        <div class="ruler" id="ruler"></div>
+      </div>
+
+      <div class="filter-row">
+        <label class="field field-search">
+          <span class="field-label">Search</span>
+          <input type="search" id="f-q" placeholder="Jacket, pajamas, blue…" autocomplete="off">
+        </label>
+        <label class="field">
+          <span class="field-label">Category</span>
+          <select id="f-category"></select>
+        </label>
+        <label class="field">
+          <span class="field-label">For</span>
+          <select id="f-gender"></select>
+        </label>
+        <label class="field">
+          <span class="field-label">Condition</span>
+          <select id="f-condition"></select>
+        </label>
+        <label class="check">
+          <input type="checkbox" id="f-out">
+          <span>Show out-of-stock</span>
+        </label>
+      </div>
+    </section>
+
+    <div class="results-bar">
+      <p id="result-count" aria-live="polite"></p>
+      <button type="button" class="link-button" id="clear-all" hidden>Clear all filters</button>
+    </div>
+
+    <ul class="catalog" id="catalog" aria-label="Clothes" aria-busy="true"></ul>
+  </main>
+
+  <footer class="site-footer">
+    <div class="wrap footer-inner">
+      <button type="button" class="link-button" id="open-status">Already sent a request? Check its status</button>
+      <a href="admin/">Coordinator sign-in</a>
+    </div>
+  </footer>
+
+  <div class="mobile-bar" id="mobile-bar" hidden>
+    <button type="button" class="btn btn-primary" id="open-list-mobile" aria-haspopup="dialog">
+      View request list <span class="count-pill" id="list-count-mobile">0/5</span>
+    </button>
+  </div>
+
+  <dialog class="sheet" id="list-sheet" aria-labelledby="sheet-title">
+    <div class="sheet-inner" id="sheet-body"></div>
+  </dialog>
+
+  <dialog class="modal" id="status-dialog" aria-labelledby="status-title">
+    <form class="modal-inner" id="status-form" novalidate>
+      <div class="modal-head">
+        <h2 id="status-title">Check a request</h2>
+        <button type="button" class="icon-button" data-close aria-label="Close">×</button>
+      </div>
+      <p class="muted">Enter the reference code you got when you sent your request.</p>
+      <label class="field">
+        <span class="field-label">Reference code</span>
+        <input id="status-ref" name="ref" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="ABC-D23" required>
+      </label>
+      <div id="status-result" aria-live="polite"></div>
+      <div class="modal-actions">
+        <button type="submit" class="btn btn-primary">Check status</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog class="modal modal-photo" id="photo-dialog" aria-label="Photo">
+    <div class="modal-inner" id="photo-body"></div>
+  </dialog>
+</body>
+</html>

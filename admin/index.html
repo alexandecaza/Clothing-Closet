@@ -1,0 +1,271 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Closet admin</title>
+  <meta name="robots" content="noindex, nofollow">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#e4e6d9" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#151b18" media="(prefers-color-scheme: dark)">
+  <link rel="icon" href="../favicon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Zilla+Slab:wght@500;600;700&display=swap">
+  <link rel="stylesheet" href="../css/styles.css">
+  <script type="module" src="../js/admin.js"></script>
+</head>
+<body class="page-admin">
+  <a class="skip-link" href="#main">Skip to content</a>
+
+  <header class="site-header admin-header">
+    <div class="wrap header-inner">
+      <div class="brand">
+        <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><path d="M6 11.5 14.5 3H27a2 2 0 0 1 2 2v12.5L20.5 26a2 2 0 0 1-2.8 0L6 14.3a2 2 0 0 1 0-2.8Z"/><circle cx="22.5" cy="9.5" r="2.4"/></svg>
+        <div>
+          <p class="brand-name" id="org-name">Clothing Closet</p>
+          <p class="brand-tagline">Coordinator</p>
+        </div>
+      </div>
+      <nav class="admin-nav" id="admin-nav" aria-label="Admin sections" hidden>
+        <a href="#inventory" data-view="inventory">Inventory</a>
+        <a href="#requests" data-view="requests">Requests <span class="count-pill count-pill-accent" id="pending-count" hidden></span></a>
+        <a href="#settings" data-view="settings">Settings</a>
+      </nav>
+      <div class="header-actions" id="header-actions" hidden>
+        <a class="link-button" href="../" target="_blank" rel="noopener">View catalog</a>
+        <button type="button" class="btn" id="sign-out">Sign out</button>
+      </div>
+    </div>
+  </header>
+
+  <main id="main" class="wrap admin-main">
+    <div id="setup"></div>
+
+    <!-- Sign in -->
+    <section class="auth-panel" id="view-login" hidden>
+      <form class="auth-card" id="login-form" novalidate>
+        <h1>Coordinator sign-in</h1>
+        <p class="muted">Accounts are set up by whoever runs this closet. Families don't need to sign in.</p>
+        <label class="field">
+          <span class="field-label">Email</span>
+          <input type="email" name="email" autocomplete="username" required>
+        </label>
+        <label class="field">
+          <span class="field-label">Password</span>
+          <input type="password" name="password" autocomplete="current-password" required>
+        </label>
+        <p class="form-error" id="login-error" role="alert"></p>
+        <button type="submit" class="btn btn-primary btn-block">Sign in</button>
+        <button type="button" class="link-button" id="forgot">Forgot password?</button>
+      </form>
+    </section>
+
+    <!-- Set a new password after following a reset link -->
+    <section class="auth-panel" id="view-recovery" hidden>
+      <form class="auth-card" id="recovery-form" novalidate>
+        <h1>Choose a new password</h1>
+        <label class="field">
+          <span class="field-label">New password</span>
+          <input type="password" name="password" autocomplete="new-password" minlength="8" required>
+          <span class="field-hint">At least 8 characters.</span>
+        </label>
+        <p class="form-error" id="recovery-error" role="alert"></p>
+        <button type="submit" class="btn btn-primary btn-block">Save password</button>
+      </form>
+    </section>
+
+    <!-- Inventory -->
+    <section id="view-inventory" class="admin-view" hidden aria-labelledby="inv-title">
+      <div class="view-head">
+        <div>
+          <h1 id="inv-title">Inventory</h1>
+          <p class="muted" id="inv-summary"></p>
+        </div>
+        <button type="button" class="btn btn-primary" id="add-item">+ Add item</button>
+      </div>
+      <div class="toolbar">
+        <label class="field field-search">
+          <span class="field-label">Search</span>
+          <input type="search" id="inv-q" placeholder="Name, notes…" autocomplete="off">
+        </label>
+        <label class="field">
+          <span class="field-label">Category</span>
+          <select id="inv-category"></select>
+        </label>
+        <label class="field">
+          <span class="field-label">Size</span>
+          <select id="inv-size"></select>
+        </label>
+        <label class="field">
+          <span class="field-label">Stock</span>
+          <select id="inv-stock">
+            <option value="">All</option>
+            <option value="in">In stock</option>
+            <option value="out">Out of stock</option>
+          </select>
+        </label>
+        <label class="field">
+          <span class="field-label">Sort</span>
+          <select id="inv-sort">
+            <option value="size">Size</option>
+            <option value="name">Name</option>
+            <option value="stock">Stock, lowest first</option>
+            <option value="recent">Recently added</option>
+          </select>
+        </label>
+      </div>
+      <div class="table-wrap">
+        <table class="table inv-table">
+          <thead>
+            <tr>
+              <th scope="col" class="col-photo"><span class="visually-hidden">Photo</span></th>
+              <th scope="col">Item</th>
+              <th scope="col">Category</th>
+              <th scope="col">Size</th>
+              <th scope="col">For</th>
+              <th scope="col">Condition</th>
+              <th scope="col" class="col-qty">In stock</th>
+              <th scope="col" class="col-actions"><span class="visually-hidden">Actions</span></th>
+            </tr>
+          </thead>
+          <tbody id="inv-body"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Requests -->
+    <section id="view-requests" class="admin-view" hidden aria-labelledby="req-title">
+      <div class="view-head">
+        <div>
+          <h1 id="req-title">Requests</h1>
+          <p class="muted">Approving doesn't change stock. Stock goes down when you mark a request picked up.</p>
+        </div>
+        <button type="button" class="btn" id="refresh-requests">Refresh</button>
+      </div>
+      <div class="segmented" role="tablist" aria-label="Request status" id="req-tabs">
+        <button type="button" role="tab" data-status="pending">Pending <span class="seg-count"></span></button>
+        <button type="button" role="tab" data-status="approved">Approved <span class="seg-count"></span></button>
+        <button type="button" role="tab" data-status="fulfilled">Picked up <span class="seg-count"></span></button>
+        <button type="button" role="tab" data-status="denied">Denied <span class="seg-count"></span></button>
+      </div>
+      <div id="req-list" role="tabpanel" aria-labelledby="req-title"></div>
+    </section>
+
+    <!-- Settings -->
+    <section id="view-settings" class="admin-view" hidden aria-labelledby="set-title">
+      <div class="view-head">
+        <h1 id="set-title">Settings</h1>
+      </div>
+      <div class="settings-grid">
+        <form class="panel" id="settings-form" novalidate>
+          <h2>Closet</h2>
+          <label class="field">
+            <span class="field-label">Closet name</span>
+            <input name="org_name" maxlength="80" required>
+            <span class="field-hint">Shown at the top of the public catalog.</span>
+          </label>
+          <label class="field field-narrow">
+            <span class="field-label">Most items per request</span>
+            <input name="max_items_per_request" type="number" min="1" max="100" inputmode="numeric" required>
+            <span class="field-hint">Total pieces one family can ask for at a time. Checked by the server, too.</span>
+          </label>
+          <p class="form-error" id="settings-error" role="alert"></p>
+          <button type="submit" class="btn btn-primary">Save settings</button>
+        </form>
+        <form class="panel" id="password-form" novalidate>
+          <h2>Your account</h2>
+          <p class="muted">Signed in as <strong id="account-email"></strong></p>
+          <label class="field">
+            <span class="field-label">New password</span>
+            <input type="password" name="password" autocomplete="new-password" minlength="8" required>
+            <span class="field-hint">At least 8 characters.</span>
+          </label>
+          <p class="form-error" id="password-error" role="alert"></p>
+          <button type="submit" class="btn">Change password</button>
+        </form>
+      </div>
+    </section>
+
+    <p class="access-denied" id="view-denied" hidden></p>
+  </main>
+
+  <!-- Add / edit item -->
+  <dialog class="modal modal-wide" id="item-dialog" aria-labelledby="item-dialog-title">
+    <form class="modal-inner" id="item-form" novalidate>
+      <div class="modal-head">
+        <h2 id="item-dialog-title">Add item</h2>
+        <button type="button" class="icon-button" data-close aria-label="Close">×</button>
+      </div>
+      <div class="item-form-grid">
+        <div class="photo-field">
+          <span class="field-label" id="photo-label">Photo</span>
+          <div class="photo-preview" id="photo-preview"></div>
+          <div class="photo-buttons">
+            <label class="btn btn-small file-button">
+              <span id="photo-choose-label">Choose photo</span>
+              <input type="file" id="photo-input" accept="image/*" aria-labelledby="photo-label photo-choose-label">
+            </label>
+            <button type="button" class="link-button link-danger" id="photo-remove" hidden>Remove photo</button>
+          </div>
+          <p class="field-hint" id="photo-hint">Resized in your browser before upload.</p>
+        </div>
+        <div class="item-fields">
+          <label class="field">
+            <span class="field-label">Name</span>
+            <input name="name" maxlength="120" required placeholder="Blue puffer jacket">
+          </label>
+          <div class="field-pair">
+            <label class="field">
+              <span class="field-label">Category</span>
+              <select name="category" required></select>
+            </label>
+            <label class="field">
+              <span class="field-label">Size</span>
+              <select name="size" required></select>
+            </label>
+          </div>
+          <div class="field-pair">
+            <label class="field">
+              <span class="field-label">For</span>
+              <select name="gender" required></select>
+            </label>
+            <label class="field">
+              <span class="field-label">Condition</span>
+              <select name="condition" required></select>
+            </label>
+          </div>
+          <label class="field field-narrow">
+            <span class="field-label">Quantity in stock</span>
+            <input name="quantity" type="number" min="0" max="9999" inputmode="numeric" required>
+          </label>
+          <label class="field">
+            <span class="field-label">Internal notes <span class="optional">(coordinators only)</span></span>
+            <textarea name="notes" rows="3" maxlength="2000" placeholder="Donor, storage bin, small stain on cuff…"></textarea>
+          </label>
+        </div>
+      </div>
+      <p class="form-error" id="item-error" role="alert"></p>
+      <div class="modal-actions">
+        <button type="button" class="btn" data-close>Cancel</button>
+        <button type="submit" class="btn" name="another" value="1" id="save-another">Save &amp; add another</button>
+        <button type="submit" class="btn btn-primary" id="save-item">Save item</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Confirmations -->
+  <dialog class="modal" id="confirm-dialog" aria-labelledby="confirm-title">
+    <form class="modal-inner" method="dialog">
+      <div class="modal-head">
+        <h2 id="confirm-title"></h2>
+      </div>
+      <div id="confirm-body"></div>
+      <div class="modal-actions">
+        <button type="submit" class="btn" value="cancel">Cancel</button>
+        <button type="submit" class="btn btn-primary" value="ok" id="confirm-ok">OK</button>
+      </div>
+    </form>
+  </dialog>
+</body>
+</html>

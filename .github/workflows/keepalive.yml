@@ -1,0 +1,22 @@
+# Optional: Supabase pauses free-tier projects after about a week with no
+# activity. This pings the database every 3 days so a quiet closet stays live.
+# Needs two repository secrets: SUPABASE_URL and SUPABASE_ANON_KEY (README, step 8).
+name: Keep Supabase awake
+
+on:
+  schedule:
+    - cron: '17 9 */3 * *'
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Read the settings row
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+        run: |
+          curl --fail --silent --show-error \
+            -H "apikey: $SUPABASE_ANON_KEY" \
+            "$SUPABASE_URL/rest/v1/settings?select=org_name&id=eq.1"
