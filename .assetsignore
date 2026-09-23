@@ -1,0 +1,16 @@
+# Files Cloudflare Workers must NOT publish. Only the website itself
+# (index.html, admin/, css/, js/, favicon.svg) should be public.
+# _headers is read by Cloudflare for the security headers, so it stays.
+.git
+.github
+.gitignore
+.assetsignore
+README.md
+supabase
+node_modules
+wrangler.toml
+wrangler.json
+wrangler.jsonc
+.wrangler
+.env
+.dev.vars

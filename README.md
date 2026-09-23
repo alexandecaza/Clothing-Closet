@@ -132,7 +132,9 @@ You're live:
 - Families: `https://clothing-closet.pages.dev/`
 - Coordinators: `https://clothing-closet.pages.dev/admin/`
 
-Every push to `main` redeploys automatically. To use your own domain, go to **Custom domains** in the Pages project, then add that domain to Supabase's Site URL / Redirect URLs too.
+Every push to `main` redeploys automatically.
+
+> **Deploying as a Cloudflare Worker (`*.workers.dev`) instead of Pages?** Workers publish every file in the folder unless told otherwise. The included `.assetsignore` keeps `.git`, `README.md`, `supabase/` and other non-website files private, so keep it in the repo. After deploying, check that `https://YOUR-SITE/.git/HEAD` returns "not found". To use your own domain, go to **Custom domains** in the Pages project, then add that domain to Supabase's Site URL / Redirect URLs too.
 
 ### 8. (Recommended) Keep the free project awake
 
