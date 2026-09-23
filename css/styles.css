@@ -401,6 +401,10 @@ code {
 
 .hp { position: absolute; left: -9999px; width: 1px; height: 1px; overflow: hidden; }
 
+/* Turnstile robot check: invisible unless Cloudflare needs a click */
+.captcha:empty { display: none; }
+.captcha iframe { max-width: 100%; }
+
 /* ---------- Notices ---------- */
 
 .notice {
@@ -1195,6 +1199,10 @@ dialog::backdrop { background: rgb(12 18 14 / 0.45); }
 }
 .flag-warn { background: var(--marigold); color: var(--on-marigold); }
 .flag-soft { background: var(--marigold-tint); color: var(--ink); }
+.flag-ok { background: var(--pine-tint); color: var(--pine); }
+
+.status-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; font-size: 14px; }
+.status-list li { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
 
 .change-list { margin: 8px 0 0; padding-left: 20px; display: grid; gap: 6px; }
 

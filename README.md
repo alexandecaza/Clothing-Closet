@@ -21,6 +21,7 @@ js/config.js            ← your Supabase URL and public key go here
 js/constants.js         Sizes, categories, conditions (edit to fit your closet)
 js/shared.js            Helpers used by both pages
 js/image.js             In-browser photo resizing before upload
+js/turnstile.js         Cloudflare Turnstile robot check (bot protection)
 js/catalog.js           Catalog logic
 js/admin.js             Admin logic
 js/supabase-client.js   Loads the Supabase library from a CDN
@@ -144,6 +145,40 @@ Supabase pauses free projects after about a week without activity. A quiet close
 
 (GitHub may disable scheduled workflows in repos with no commits for 60 days. If that happens it'll email you, and you can re-enable it from the Actions tab.)
 
+### 9. Turn on bot protection (Cloudflare Turnstile)
+
+The request form is public, so bots could flood the closet with fake requests. Turnstile is Cloudflare's free robot check. Most people never see it; it only shows a checkbox when Cloudflare isn't sure. The database checks every token with Cloudflare itself, so bots can't skip it by calling the API directly.
+
+Do these in order, so the live site never asks for a check it can't show.
+
+1. **Create the widget.** In the [Cloudflare dashboard](https://dash.cloudflare.com), open **Turnstile** (search for it if it's not in the sidebar) → **Add widget**.
+   - Name: e.g. `Clothing Closet`
+   - Hostnames: your Pages address, e.g. `clothing-closet.pages.dev`, plus any custom domain. Add `localhost` too if you test locally.
+   - Widget mode: **Managed**
+   - Click **Create**, then copy the **Site Key** and the **Secret Key**.
+2. **Put the site key in the website.** In `js/config.js`:
+   ```js
+   export const TURNSTILE_SITE_KEY = '0x4AAAAAAA...';
+   ```
+   Commit and push, then wait for Cloudflare Pages to finish deploying.
+3. **Give the secret key to the database.** In Supabase → **SQL Editor**, run:
+   ```sql
+   select vault.create_secret('YOUR-TURNSTILE-SECRET-KEY', 'turnstile_secret');
+   ```
+   From now on, requests without a valid robot check are refused. (To change the key later: `select vault.update_secret((select id from vault.secrets where name = 'turnstile_secret'), 'NEW-SECRET');`)
+4. **Protect coordinator sign-in too.** In Supabase → **Authentication** → **Attack Protection** (called "Bot and Abuse Protection" on some dashboards), turn on **CAPTCHA protection**. Choose **Turnstile by Cloudflare**, paste the same **secret key**, and save.
+5. **Check it:** sign in to the admin → **Settings** → **Bot protection**. All three lines should say **On**.
+
+> **Set up the closet before bot protection was added?** Re-run the whole `supabase/schema.sql` once (step 2). It's safe to re-run, and it adds the new protections.
+
+Even before Turnstile is set up, these limits are already on:
+- **5 request attempts per hour** from one internet connection
+- **3 requests per day** from the same phone number or email
+- **40 new requests per hour** for the whole closet: a circuit breaker if a flood gets through
+- **20 status lookups per hour** from one connection, so reference codes can't be guessed in bulk
+
+To change these numbers, edit the constants at the top of `public.submit_request` in `schema.sql` and re-run it.
+
 ---
 
 ## Using it
@@ -175,13 +210,18 @@ All rules live in `supabase/schema.sql` and are enforced by the database, not th
 
 | Who | Can | Can't |
 |---|---|---|
-| Public (no login) | Read items (except **internal notes**, which are withheld at the column level), read settings, create a request **only through `submit_request()`**, look up a request's **status** by reference code | Read any request or anyone's contact info; add, edit or delete items; change settings; upload photos |
+| Public (no login) | Read items (except **internal notes**, which are withheld at the column level), read settings, create a request **only through `submit_request()`**, which needs a valid robot check and is rate-limited, and look up a request's **status** by reference code (also rate-limited) | Read any request or anyone's contact info; add, edit or delete items; change settings; upload photos |
 | Signed-in account **not** in `admins` | Nothing beyond the public | Same as above |
 | Coordinator (in `admins`) | Everything: items, photos, requests, settings | Mark a request fulfilled without going through `fulfill_request()` (which adjusts stock); edit what a family asked for |
 
-`submit_request()` re-checks everything on the server: that the name and contact are present, that every item exists and has enough stock, and that the total is under the cap. It also limits each phone/email to 3 requests per day. It copies item names and sizes from the database, not from the browser. The page's own checks are only there for convenience.
+`submit_request()` re-checks everything on the server: that the name and contact are present, that every item exists and has enough stock, and that the total is under the cap. It copies item names and sizes from the database, not from the browser. The page's own checks are only there for convenience.
 
-**Spam:** anyone can submit requests, so there's a hidden honeypot field plus the per-contact daily limit. If you get bot spam anyway, adding [Cloudflare Turnstile](https://www.cloudflare.com/products/turnstile/) is the next step.
+**Bots and spam** (see [step 9](#9-turn-on-bot-protection-cloudflare-turnstile)):
+- **Robot check:** Cloudflare Turnstile on the request form and on coordinator sign-in / password reset. The database and Supabase Auth verify the tokens with Cloudflare. Each token works once, so it can't be replayed.
+- **Rate limits in the database:** per internet connection (requests and status lookups), per phone/email, plus a closet-wide hourly ceiling. Only a one-way hash of the visitor's IP is stored, and it's deleted after a day.
+- **Supabase Auth's own limits** on sign-in and password-reset attempts.
+- A hidden honeypot field that simple form-filling bots fall into.
+- The helper functions live in a `private` database schema that the public API can't reach.
 
 ---
 
@@ -203,4 +243,7 @@ It talks to your real Supabase project, so fill in `js/config.js` first. For loc
 - **"permission denied" / "Not authorized"** in the admin: same cause, or the schema script didn't finish. Re-run `schema.sql`.
 - **Photo won't upload from an iPhone**: some browsers can't read HEIC. On the iPhone, go to Settings → Camera → Formats → *Most Compatible*, or send the photo as JPEG.
 - **Site suddenly can't load anything**: the Supabase project may be paused. Restore it from the dashboard, and set up step 8.
+- **"Please complete the robot check" / "The robot check didn't go through"**: the site key in `js/config.js` must belong to the same Turnstile widget as the secret in Vault and in Supabase Auth. The widget's hostname list must also include the address you're visiting (including `localhost` when testing).
+- **Families suddenly can't send requests right after step 9**: the Vault secret is set but the site with the site key hasn't deployed yet. Wait for the deploy, or check Settings → Bot protection.
+- **Coordinator can't sign in after turning on CAPTCHA in Supabase**: the deployed `js/config.js` doesn't have the site key yet. Add it and push, or turn CAPTCHA protection off again in Supabase.
 - **Fonts or the Supabase library blocked**: if you add other third-party scripts, update the `Content-Security-Policy` line in `_headers` to allow them.

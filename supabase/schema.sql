@@ -7,8 +7,9 @@
 -- Security model
 --   anon (the public, no login):
 --     • read items (every column EXCEPT internal notes) and the settings row
---     • create requests ONLY through submit_request(), which validates the
---       item list, the per-request cap, and stock server-side
+--     • create requests ONLY through submit_request(), which checks a
+--       Cloudflare Turnstile robot-check token, rate limits, the item list,
+--       the per-request cap, and stock — all server-side
 --     • look up the status (only the status) of a request by reference code
 --     • cannot read requests, contact info, or write anything else
 --   authenticated users listed in public.admins:
@@ -175,10 +176,140 @@ create trigger requests_guard_status before update on public.requests
 
 
 -- ---------------------------------------------------------------------------
+-- Bot protection
+--   • Cloudflare Turnstile: every request submission must carry a token that
+--     the database verifies with Cloudflare (secret stored in Supabase Vault
+--     as 'turnstile_secret' — README step 9). Until that secret exists,
+--     verification is skipped and the admin Settings page warns about it.
+--   • Per-IP rate limits on submitting and on status lookups.
+--   • A closet-wide ceiling on new requests per hour.
+--   • Per-contact limit (3 per day) inside private.create_request().
+-- Helpers live in the "private" schema, which the public API can't reach.
+-- ---------------------------------------------------------------------------
+
+create extension if not exists http with schema extensions;
+
+create schema if not exists private;
+revoke all on schema private from public;
+revoke all on schema private from anon, authenticated;
+
+create table if not exists private.rate_events (
+  id         bigint generated always as identity primary key,
+  kind       text not null,
+  ip_hash    text not null,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists rate_events_lookup_idx
+  on private.rate_events (kind, ip_hash, created_at);
+
+-- RLS on with no policies: nobody but the table owner (the functions below)
+-- can touch it, even if the schema were ever exposed by mistake.
+alter table private.rate_events enable row level security;
+
+-- The visitor's IP as reported by Supabase's edge (null if unavailable).
+create or replace function private.client_ip()
+returns text
+language sql
+stable
+set search_path = ''
+as $$
+  select nullif(btrim(coalesce(
+    nullif(current_setting('request.headers', true), '')::json ->> 'cf-connecting-ip',
+    split_part(nullif(current_setting('request.headers', true), '')::json ->> 'x-forwarded-for', ',', 1)
+  )), '');
+$$;
+
+-- Records one attempt of `p_kind` for this IP and says whether the IP is over
+-- the limit. Only a pseudonymous hash is stored, and only for a day.
+create or replace function private.hit_rate_limit(p_kind text, p_max int, p_window interval)
+returns boolean
+language plpgsql
+set search_path = ''
+as $$
+declare
+  v_ip   text := private.client_ip();
+  v_hash text;
+begin
+  if v_ip is null then
+    return false; -- no IP to go on; other limits still apply
+  end if;
+  v_hash := md5('clothing-closet:' || v_ip);
+
+  delete from private.rate_events where created_at < now() - interval '1 day';
+
+  if (select count(*) from private.rate_events
+       where kind = p_kind and ip_hash = v_hash
+         and created_at > now() - p_window) >= p_max then
+    return true;
+  end if;
+
+  insert into private.rate_events (kind, ip_hash) values (p_kind, v_hash);
+  return false;
+end;
+$$;
+
+create or replace function private.turnstile_secret()
+returns text
+language sql
+stable
+set search_path = ''
+as $$
+  select decrypted_secret from vault.decrypted_secrets where name = 'turnstile_secret' limit 1;
+$$;
+
+-- Raises a friendly error unless Cloudflare confirms the token.
+create or replace function private.verify_turnstile(p_token text, p_action text)
+returns void
+language plpgsql
+set search_path = ''
+as $$
+declare
+  v_secret text := private.turnstile_secret();
+  v_resp   extensions.http_response;
+  v_body   jsonb;
+begin
+  if v_secret is null then
+    return; -- not configured yet (admin Settings shows a warning)
+  end if;
+
+  if coalesce(p_token, '') = '' then
+    raise exception 'Please complete the “I''m not a robot” check, then send again.';
+  end if;
+
+  begin
+    v_resp := extensions.http_post(
+      'https://challenges.cloudflare.com/turnstile/v0/siteverify',
+      jsonb_strip_nulls(jsonb_build_object(
+        'secret',   v_secret,
+        'response', p_token,
+        'remoteip', private.client_ip()
+      ))::text,
+      'application/json'
+    );
+    v_body := v_resp.content::jsonb;
+  exception when others then
+    raise exception 'We couldn''t run the robot check just now. Please try again in a moment.';
+  end;
+
+  if v_resp.status <> 200
+     or coalesce((v_body ->> 'success')::boolean, false) is not true
+     or (p_action is not null and v_body ->> 'action' is distinct from p_action) then
+    raise exception 'The robot check didn''t go through. Please try again.';
+  end if;
+end;
+$$;
+
+
+-- ---------------------------------------------------------------------------
 -- Public: submit a request (the ONLY way a request row gets created)
 -- ---------------------------------------------------------------------------
 
-create or replace function public.submit_request(
+-- Older versions of this file exposed a 4-argument submit_request directly.
+drop function if exists public.submit_request(text, text, text, jsonb);
+
+-- Validates and inserts; raises a readable error on any problem.
+create or replace function private.create_request(
   p_family_name text,
   p_contact     text,
   p_note        text,
@@ -186,7 +317,6 @@ create or replace function public.submit_request(
 )
 returns text
 language plpgsql
-security definer
 set search_path = ''
 as $$
 declare
@@ -297,24 +427,80 @@ begin
 end;
 $$;
 
-revoke all on function public.submit_request(text, text, text, jsonb) from public;
-grant execute on function public.submit_request(text, text, text, jsonb) to anon, authenticated;
+-- The public entry point. Returns { ok: true, ref } or { ok: false, error }
+-- instead of raising, so rate-limit bookkeeping for failed attempts (e.g. a
+-- bot failing the robot check) is kept rather than rolled back.
+create or replace function public.submit_request(
+  p_family_name   text,
+  p_contact       text,
+  p_note          text,
+  p_items         jsonb,
+  p_captcha_token text default null
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  -- Tune these to your closet.
+  c_per_ip_per_hour  constant int := 5;   -- attempts from one connection
+  c_closet_per_hour  constant int := 40;  -- successful requests, everyone combined
+  v_ref text;
+begin
+  if private.hit_rate_limit('submit', c_per_ip_per_hour, interval '1 hour') then
+    return jsonb_build_object('ok', false, 'error',
+      'Too many tries from your connection. Please wait an hour and try again.');
+  end if;
+
+  if (select count(*) from public.requests
+       where created_at > now() - interval '1 hour') >= c_closet_per_hour then
+    return jsonb_build_object('ok', false, 'error',
+      'The closet is getting an unusual number of requests right now. Please try again later today.');
+  end if;
+
+  begin
+    perform private.verify_turnstile(p_captcha_token, 'submit-request');
+    v_ref := private.create_request(p_family_name, p_contact, p_note, p_items);
+  exception
+    when raise_exception then
+      return jsonb_build_object('ok', false, 'error', sqlerrm);
+    when others then
+      return jsonb_build_object('ok', false, 'error',
+        'Something went wrong sending your request. Please try again.');
+  end;
+
+  return jsonb_build_object('ok', true, 'ref', v_ref);
+end;
+$$;
+
+revoke all on function public.submit_request(text, text, text, jsonb, text) from public;
+grant execute on function public.submit_request(text, text, text, jsonb, text) to anon, authenticated;
 
 
 -- ---------------------------------------------------------------------------
 -- Public: look up ONLY the status of a request by its reference code
+-- (rate-limited per IP so codes can't be guessed in bulk)
 -- ---------------------------------------------------------------------------
 
-create or replace function public.request_status(p_ref text)
+drop function if exists public.request_status(text);
+
+create function public.request_status(p_ref text)
 returns table (status text, created_at timestamptz, updated_at timestamptz)
-language sql
-stable
+language plpgsql
 security definer
 set search_path = ''
 as $$
-  select r.status, r.created_at, r.updated_at
-    from public.requests r
-   where r.ref_code = upper(regexp_replace(coalesce(p_ref, ''), '[^A-Za-z0-9]', '', 'g'));
+begin
+  if private.hit_rate_limit('status', 20, interval '1 hour') then
+    raise exception 'Too many lookups from your connection. Please try again later.';
+  end if;
+
+  return query
+    select r.status, r.created_at, r.updated_at
+      from public.requests r
+     where r.ref_code = upper(regexp_replace(coalesce(p_ref, ''), '[^A-Za-z0-9]', '', 'g'));
+end;
 $$;
 
 revoke all on function public.request_status(text) from public;
@@ -363,6 +549,35 @@ $$;
 revoke all on function public.fulfill_request(uuid) from public;
 revoke all on function public.fulfill_request(uuid) from anon;
 grant execute on function public.fulfill_request(uuid) to authenticated;
+
+
+-- ---------------------------------------------------------------------------
+-- Admin: is bot protection fully set up? (shown on the Settings page)
+-- ---------------------------------------------------------------------------
+
+create or replace function public.bot_protection_status()
+returns jsonb
+language plpgsql
+stable
+security definer
+set search_path = ''
+as $$
+begin
+  if not public.is_admin() then
+    raise exception 'Not authorized.' using errcode = '42501';
+  end if;
+  return jsonb_build_object('turnstile_secret', private.turnstile_secret() is not null);
+end;
+$$;
+
+revoke all on function public.bot_protection_status() from public;
+revoke all on function public.bot_protection_status() from anon;
+grant execute on function public.bot_protection_status() to authenticated;
+
+-- Nothing in the private schema is callable from the API.
+revoke all on all functions in schema private from public;
+revoke all on all functions in schema private from anon, authenticated;
+revoke all on all tables in schema private from anon, authenticated;
 
 
 -- ---------------------------------------------------------------------------

@@ -4,6 +4,7 @@ import {
   isConfigured, showSetupNotice, photoUrl, escapeHtml, compareItems, formatRef, pluralize,
   isValidContact, friendlyError, debounce, preserveFocus, toast, fillSelect,
 } from './shared.js';
+import { mountTurnstile } from './turnstile.js';
 
 // Internal notes are deliberately not requested (and not readable by the public).
 const PUBLIC_COLUMNS = 'id,name,category,size,gender,condition,quantity,photo_path,thumb_path';
@@ -25,6 +26,7 @@ const state = {
 };
 
 let supabase;
+let captcha = null; // robot check on the request form
 
 // ---------------------------------------------------------------------------
 // Storage helpers (per-browser conveniences only)
@@ -368,6 +370,8 @@ function openSheet() {
 
 function renderSheet() {
   const body = $('sheet-body');
+  captcha?.remove();
+  captcha = null;
   if (state.sheetView === 'sent') {
     body.innerHTML = `
       <div class="sheet-head">
@@ -410,12 +414,14 @@ function renderSheet() {
         <textarea name="note" rows="3" maxlength="1000" placeholder="Ages, anything specific you're looking for, best times to reach you…"></textarea>
       </label>
       <label class="hp" aria-hidden="true">Leave this empty <input name="website" tabindex="-1" autocomplete="off"></label>
+      <div class="captcha" id="request-captcha"></div>
       <p class="form-error" id="request-error" role="alert"></p>
       <button type="submit" class="btn btn-primary btn-block" id="request-submit">Send request</button>
       <p class="fine-print">Everything is free. Sending a request doesn't reserve items — the coordinator will confirm what's available when they contact you.</p>
     </form>`;
   renderSheetItems();
   $('request-form').addEventListener('submit', submitRequest);
+  captcha = mountTurnstile($('request-captcha'), { action: 'submit-request' });
 }
 
 function renderSheetItems() {
@@ -491,19 +497,32 @@ async function submitRequest(e) {
   submit.disabled = true;
   submit.textContent = 'Sending…';
 
-  const { data: ref, error } = await supabase.rpc('submit_request', {
+  const done = (message) => {
+    state.submitting = false;
+    submit.textContent = 'Send request';
+    submit.disabled = false;
+    errorEl.textContent = message;
+  };
+
+  let token = '';
+  try {
+    token = await captcha?.getToken();
+  } catch (err) {
+    done(err.message);
+    return;
+  }
+
+  const { data: result, error } = await supabase.rpc('submit_request', {
     p_family_name: name,
     p_contact: contact,
     p_note: data.note.trim(),
     p_items: state.list.map((l) => ({ item_id: l.id, qty: l.qty })),
+    p_captcha_token: token || null,
   });
+  captcha?.reset(); // tokens are single-use
 
-  state.submitting = false;
-  submit.textContent = 'Send request';
-
-  if (error) {
-    errorEl.textContent = friendlyError(error);
-    submit.disabled = false;
+  if (error || !result?.ok) {
+    done(error ? friendlyError(error) : result?.error || 'Something went wrong. Please try again.');
     // Stock may have changed since the page loaded; refresh quietly.
     loadItems().then(() => {
       reconcileList();
@@ -511,6 +530,10 @@ async function submitRequest(e) {
     });
     return;
   }
+
+  const ref = result.ref;
+  state.submitting = false;
+  submit.textContent = 'Send request';
 
   state.lastRef = ref;
   state.sentContact = contact;

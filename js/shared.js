@@ -94,6 +94,12 @@ export function friendlyError(error) {
   if (/failed to fetch|networkerror|load failed/i.test(message)) {
     return "Couldn't reach the server. Check your connection and try again.";
   }
+  if (/captcha/i.test(message)) {
+    return "The robot check didn't go through. Please try again.";
+  }
+  if (/rate limit|too many requests/i.test(message)) {
+    return 'Too many attempts. Please wait a few minutes and try again.';
+  }
   if (/jwt|token/i.test(message) && /expired|invalid/i.test(message)) {
     return 'Your session expired. Please sign in again.';
   }

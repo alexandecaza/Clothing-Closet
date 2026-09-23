@@ -55,6 +55,7 @@
           <span class="field-label">Password</span>
           <input type="password" name="password" autocomplete="current-password" required>
         </label>
+        <div class="captcha" id="login-captcha"></div>
         <p class="form-error" id="login-error" role="alert"></p>
         <button type="submit" class="btn btn-primary btn-block">Sign in</button>
         <button type="button" class="link-button" id="forgot">Forgot password?</button>
@@ -184,6 +185,11 @@
           <p class="form-error" id="password-error" role="alert"></p>
           <button type="submit" class="btn">Change password</button>
         </form>
+        <section class="panel" aria-labelledby="bot-title">
+          <h2 id="bot-title">Bot protection</h2>
+          <ul class="status-list" id="bot-status"></ul>
+          <p class="field-hint" id="bot-hint"></p>
+        </section>
       </div>
     </section>
 

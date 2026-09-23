@@ -5,6 +5,7 @@ import {
   relativeTime, contactHref, friendlyError, debounce, preserveFocus, toast, fillSelect,
 } from './shared.js';
 import { preparePhoto, formatBytes } from './image.js';
+import { mountTurnstile, turnstileConfigured } from './turnstile.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -27,6 +28,7 @@ const state = {
 };
 
 let supabase;
+let loginCaptcha = null; // robot check on sign-in / password reset
 
 // ---------------------------------------------------------------------------
 // Screens
@@ -51,6 +53,13 @@ function showLogin(message = '') {
   showScreen('login');
   $('login-error').textContent = message;
   $('login-form').email.focus();
+  loginCaptcha ??= mountTurnstile($('login-captcha'), { action: 'admin-login' });
+}
+
+// A fresh robot-check token for Supabase Auth, or undefined if not configured.
+async function authCaptchaToken() {
+  if (!loginCaptcha?.enabled) return undefined;
+  return loginCaptcha.getToken();
 }
 
 function route() {
@@ -105,7 +114,21 @@ function wireAuth() {
     const button = form.querySelector('[type=submit]');
     button.disabled = true;
     button.textContent = 'Signing in…';
-    const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+    let captchaToken;
+    try {
+      captchaToken = await authCaptchaToken();
+    } catch (err) {
+      errorEl.textContent = err.message;
+      button.disabled = false;
+      button.textContent = 'Sign in';
+      return;
+    }
+    const { data, error } = await supabase.auth.signInWithPassword({
+      email,
+      password,
+      options: captchaToken ? { captchaToken } : undefined,
+    });
+    loginCaptcha?.reset();
     button.disabled = false;
     button.textContent = 'Sign in';
     if (error) {
@@ -126,9 +149,18 @@ function wireAuth() {
       $('login-form').email.focus();
       return;
     }
+    let captchaToken;
+    try {
+      captchaToken = await authCaptchaToken();
+    } catch (err) {
+      errorEl.textContent = err.message;
+      return;
+    }
     const { error } = await supabase.auth.resetPasswordForEmail(email, {
       redirectTo: location.origin + location.pathname,
+      captchaToken,
     });
+    loginCaptcha?.reset();
     errorEl.textContent = error
       ? friendlyError(error)
       : 'If that address has an account, a reset link is on its way. Check your inbox.';
@@ -895,6 +927,36 @@ function renderSettings() {
   form.org_name.value = state.settings.org_name;
   form.max_items_per_request.value = state.settings.max_items_per_request;
   $('settings-error').textContent = '';
+  renderBotStatus();
+}
+
+async function renderBotStatus() {
+  const list = $('bot-status');
+  const hint = $('bot-hint');
+  const row = (label, on, onText = 'On', offText = 'Not set up') =>
+    `<li><span>${label}</span><span class="flag ${on ? 'flag-ok' : 'flag-warn'}">${on ? onText : offText}</span></li>`;
+
+  list.innerHTML = '<li class="muted">Checking…</li>';
+  const { data, error } = await supabase.rpc('bot_protection_status');
+  const siteKey = turnstileConfigured();
+  const secret = !error && Boolean(data?.turnstile_secret);
+
+  list.innerHTML =
+    row('Robot check on forms (site key in <code>js/config.js</code>)', siteKey) +
+    row('Robot check verified by the database (secret in Supabase Vault)', secret, 'On', error ? 'Unknown' : 'Not set up') +
+    row('Rate limits on requests and status lookups', !error, 'On', 'Unknown');
+
+  if (error) {
+    hint.textContent = `Couldn't check: ${friendlyError(error)} Re-run supabase/schema.sql if you set this closet up before bot protection was added.`;
+  } else if (siteKey && secret) {
+    hint.textContent = 'Families’ requests are checked for bots. For sign-in, also turn on CAPTCHA in Supabase (README, step 9).';
+  } else if (!siteKey && !secret) {
+    hint.textContent = 'Requests aren’t checked for bots yet. Follow README step 9 to turn it on.';
+  } else if (secret) {
+    hint.textContent = 'Warning: the database expects a robot check but the site key is missing, so families can’t send requests. Add it to js/config.js.';
+  } else {
+    hint.textContent = 'The form shows a robot check, but the database isn’t verifying it yet. Add the secret key to Supabase Vault (README step 9).';
+  }
 }
 
 function wireSettings() {
