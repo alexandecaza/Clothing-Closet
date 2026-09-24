@@ -238,13 +238,14 @@ async function refreshQuietly() {
 // Confirm dialog
 // ---------------------------------------------------------------------------
 
-function confirmDialog({ title, body, ok = 'OK', danger = false }) {
+function confirmDialog({ title, body, ok = 'OK', danger = false, cancel = true }) {
   const dialog = $('confirm-dialog');
   $('confirm-title').textContent = title;
   $('confirm-body').innerHTML = body;
   const okButton = $('confirm-ok');
   okButton.textContent = ok;
   okButton.className = `btn ${danger ? 'btn-danger' : 'btn-primary'}`;
+  dialog.querySelector('button[value="cancel"]').hidden = !cancel;
   dialog.returnValue = '';
   dialog.showModal();
   return new Promise((resolve) => {
@@ -291,12 +292,14 @@ function filteredItems() {
 function renderInventorySummary() {
   const pieces = state.items.reduce((sum, i) => sum + i.quantity, 0);
   const out = state.items.filter((i) => i.quantity <= 0).length;
+  const held = [...setAsideByItem().values()].reduce((sum, n) => sum + n, 0);
   $('inv-summary').textContent =
     `${pluralize(state.items.length, 'item')} · ${pluralize(pieces, 'piece')} in stock` +
+    (held ? ` · ${held} set aside for pickup` : '') +
     (out ? ` · ${out} out of stock` : '');
 }
 
-function inventoryRow(item) {
+function inventoryRow(item, held = 0) {
   const name = escapeHtml(item.name);
   const thumb = item.thumb_path
     ? `<img src="${escapeHtml(photoUrl(item.thumb_path))}" alt="" loading="lazy" width="48" height="48">`
@@ -319,6 +322,7 @@ function inventoryRow(item) {
           <button type="button" class="stepper-btn" data-action="qty-inc" data-focus-key="qty-inc:${item.id}"
             aria-label="Increase stock of ${name}">+</button>
         </div>
+        ${held ? `<span class="held-note">+ ${held} set aside for pickup</span>` : ''}
         <span class="save-state" data-save-state aria-live="polite"></span>
       </td>
       <td class="col-actions">
@@ -336,7 +340,8 @@ function renderInventoryRows() {
   } else if (rows.length === 0) {
     body.innerHTML = `<tr><td colspan="8" class="table-empty">No items match these filters.</td></tr>`;
   } else {
-    body.innerHTML = rows.map(inventoryRow).join('');
+    const held = setAsideByItem();
+    body.innerHTML = rows.map((item) => inventoryRow(item, held.get(item.id))).join('');
   }
   renderInventorySummary();
 }
@@ -667,13 +672,29 @@ async function deleteItem(item) {
 
 const isOpen = (r) => r.status === 'pending' || r.status === 'approved';
 
+// Approved requests hold their items out of stock until pickup.
+const holdsStock = (r) => r.status === 'approved' && r.stock_reserved;
+// Requests whose items still have to come out of stock (pending, or approved
+// before approval started setting items aside).
+const needsStock = (r) => r.status === 'pending' || (r.status === 'approved' && !r.stock_reserved);
+
 function openDemand() {
   const demand = new Map();
   for (const r of state.requests) {
-    if (!isOpen(r)) continue;
+    if (!needsStock(r)) continue;
     for (const line of r.items) demand.set(line.itemId, (demand.get(line.itemId) || 0) + line.qty);
   }
   return demand;
+}
+
+// itemId → pieces set aside for approved requests awaiting pickup
+function setAsideByItem() {
+  const held = new Map();
+  for (const r of state.requests) {
+    if (!holdsStock(r)) continue;
+    for (const line of r.items) held.set(line.itemId, (held.get(line.itemId) || 0) + line.qty);
+  }
+  return held;
 }
 
 function renderPendingBadge() {
@@ -686,11 +707,14 @@ function renderPendingBadge() {
 
 function requestLines(r, demand) {
   const open = isOpen(r);
+  const check = needsStock(r);
   let level = '';
   const rows = r.items.map((line) => {
     const item = state.byId.get(line.itemId);
     let flag = '';
-    if (open) {
+    if (holdsStock(r)) {
+      flag = `<span class="flag flag-ok">Set aside</span>`;
+    } else if (check) {
       if (!item) {
         flag = `<span class="flag flag-warn">No longer in inventory</span>`;
         level = 'warn';
@@ -698,7 +722,7 @@ function requestLines(r, demand) {
         flag = `<span class="flag flag-warn">Only ${item.quantity} in stock</span>`;
         level = 'warn';
       } else if ((demand.get(line.itemId) || 0) > item.quantity) {
-        flag = `<span class="flag flag-soft">${demand.get(line.itemId)} wanted across open requests</span>`;
+        flag = `<span class="flag flag-soft">${demand.get(line.itemId)} wanted across pending requests</span>`;
         level ||= 'soft';
       }
     }
@@ -716,7 +740,7 @@ function requestLines(r, demand) {
       <thead>
         <tr>
           <th scope="col">Item</th><th scope="col">Size</th><th scope="col" class="num">Wants</th>
-          ${open ? '<th scope="col" class="num">In stock</th><th scope="col"><span class="visually-hidden">Stock check</span></th>' : ''}
+          ${open ? '<th scope="col" class="num">Available</th><th scope="col"><span class="visually-hidden">Stock check</span></th>' : ''}
         </tr>
       </thead>
       <tbody>${rows.join('')}</tbody>
@@ -741,9 +765,11 @@ function requestActions(r) {
 
 function requestCard(r, demand) {
   const { table, level } = requestLines(r, demand);
-  const badge = level === 'warn'
-    ? '<span class="flag flag-warn">Stock short</span>'
-    : level === 'soft' ? '<span class="flag flag-soft">Competing requests</span>' : '';
+  const badge = holdsStock(r)
+    ? '<span class="flag flag-ok">Set aside for pickup</span>'
+    : level === 'warn'
+      ? '<span class="flag flag-warn">Stock short</span>'
+      : level === 'soft' ? '<span class="flag flag-soft">Competing requests</span>' : '';
   return `
     <article class="req-card${level ? ` is-${level}` : ''}" data-id="${r.id}">
       <header class="req-head">
@@ -797,35 +823,9 @@ function renderRequests() {
   });
 }
 
-async function updateStatus(r, status, message) {
-  const { error } = await supabase.from('requests').update({ status }).eq('id', r.id).select('id').single();
-  if (error) {
-    toast(friendlyError(error), { tone: 'error' });
-    await refreshQuietly();
-    return;
-  }
-  await loadRequests();
-  renderRequests();
-  toast(message);
-}
-
-async function fulfillRequest(r) {
-  const lines = r.items.map((line) => {
-    const item = state.byId.get(line.itemId);
-    if (!item) return `<li>${escapeHtml(line.name)} — <em>no longer in inventory, skipped</em></li>`;
-    const after = Math.max(0, item.quantity - line.qty);
-    const short = line.qty > item.quantity
-      ? ` <span class="flag flag-warn">asks for ${line.qty}, only ${item.quantity} — stops at 0</span>`
-      : '';
-    return `<li>${escapeHtml(item.name)} <span class="muted">(${escapeHtml(item.size)})</span>: ${item.quantity} → <strong>${after}</strong>${short}</li>`;
-  });
-  const ok = await confirmDialog({
-    title: `Mark ${r.family_name}'s request picked up?`,
-    body: `<p>Stock will change like this:</p><ul class="change-list">${lines.join('')}</ul>`,
-    ok: 'Mark picked up',
-  });
-  if (!ok) return;
-  const { error } = await supabase.rpc('fulfill_request', { p_id: r.id });
+// All status changes go through the database so stock moves in the same step.
+async function changeStatus(r, status, message) {
+  const { error } = await supabase.rpc('change_request_status', { p_id: r.id, p_status: status });
   if (error) {
     toast(friendlyError(error), { tone: 'error' });
     await refreshQuietly();
@@ -833,25 +833,94 @@ async function fulfillRequest(r) {
   }
   await Promise.all([loadItems(), loadRequests()]);
   renderRequests();
-  toast('Marked picked up. Stock updated.');
+  toast(message);
+}
+
+function itemLabel(line, item) {
+  return `${escapeHtml(item?.name ?? line.name)} <span class="muted">(${escapeHtml(item?.size ?? line.size)})</span>`;
+}
+
+async function approveRequest(r) {
+  const short = r.items.filter((line) => {
+    const item = state.byId.get(line.itemId);
+    return !item || line.qty > item.quantity;
+  });
+  if (short.length) {
+    const lines = short.map((line) => {
+      const item = state.byId.get(line.itemId);
+      return `<li>${itemLabel(line, item)}: ${item ? `wants ${line.qty}, only ${item.quantity} available` : 'no longer in inventory'}</li>`;
+    });
+    await confirmDialog({
+      title: 'Not enough stock to approve',
+      body: `<p>Approving takes items out of stock, and these aren't available:</p>
+        <ul class="change-list">${lines.join('')}</ul>
+        <p>If you actually have more on the shelf, update the stock in Inventory first. Otherwise deny the request, or contact the family about a smaller one.</p>`,
+      ok: 'OK',
+      cancel: false,
+    });
+    return;
+  }
+
+  const lines = r.items.map((line) => {
+    const item = state.byId.get(line.itemId);
+    return `<li>${itemLabel(line, item)}: ${item.quantity} → <strong>${item.quantity - line.qty}</strong> available</li>`;
+  });
+  const ok = await confirmDialog({
+    title: `Approve ${r.family_name}'s request?`,
+    body: `<p>These items will be <strong>set aside for pickup</strong> and taken out of stock, so no other family can request them:</p>
+      <ul class="change-list">${lines.join('')}</ul>
+      <p>Then contact them at <a href="${escapeHtml(contactHref(r.contact))}">${escapeHtml(r.contact)}</a> to arrange pickup.</p>`,
+    ok: 'Approve & set aside',
+  });
+  if (!ok) return;
+  await changeStatus(r, 'approved', `Approved: ${pluralize(r.total_qty, 'item')} set aside for pickup.`);
+}
+
+async function fulfillRequest(r) {
+  let body;
+  if (holdsStock(r)) {
+    body = `<p>Stock won't change: these items already came out of stock when you approved the request.</p>`;
+  } else {
+    // Approved before approval started setting items aside: stock comes off now.
+    const lines = r.items.map((line) => {
+      const item = state.byId.get(line.itemId);
+      if (!item) return `<li>${escapeHtml(line.name)}: <em>no longer in inventory, skipped</em></li>`;
+      const after = Math.max(0, item.quantity - line.qty);
+      const short = line.qty > item.quantity
+        ? ` <span class="flag flag-warn">asks for ${line.qty}, only ${item.quantity}, stops at 0</span>`
+        : '';
+      return `<li>${itemLabel(line, item)}: ${item.quantity} → <strong>${after}</strong>${short}</li>`;
+    });
+    body = `<p>Stock will change like this:</p><ul class="change-list">${lines.join('')}</ul>`;
+  }
+  const ok = await confirmDialog({
+    title: `Mark ${r.family_name}'s request picked up?`,
+    body,
+    ok: 'Mark picked up',
+  });
+  if (ok) await changeStatus(r, 'fulfilled', 'Marked picked up.');
 }
 
 async function handleRequestAction(action, r) {
+  const returned = holdsStock(r) ? ` ${pluralize(r.total_qty, 'item')} back in stock.` : '';
   if (action === 'approve') {
-    await updateStatus(r, 'approved', `Approved. Contact ${r.family_name} to arrange pickup.`);
+    await approveRequest(r);
   } else if (action === 'unapprove') {
-    await updateStatus(r, 'pending', 'Moved back to pending.');
+    await changeStatus(r, 'pending', `Moved back to pending.${returned}`);
   } else if (action === 'reopen') {
-    await updateStatus(r, 'pending', 'Reopened.');
+    await changeStatus(r, 'pending', 'Reopened.');
   } else if (action === 'deny') {
     const ok = await confirmDialog({
       title: `Deny ${r.family_name}'s request?`,
-      body: `<p>No stock changes. The family isn't notified automatically — let them know at
+      body: `<p>${holdsStock(r)
+          ? `The ${pluralize(r.total_qty, 'item')} set aside for them will go back into stock.`
+          : 'No stock changes.'}
+        The family isn't notified automatically, so let them know at
         <a href="${escapeHtml(contactHref(r.contact))}">${escapeHtml(r.contact)}</a>.</p>`,
       ok: 'Deny request',
       danger: true,
     });
-    if (ok) await updateStatus(r, 'denied', 'Request denied.');
+    if (ok) await changeStatus(r, 'denied', `Request denied.${returned}`);
   } else if (action === 'fulfill') {
     await fulfillRequest(r);
   } else if (action === 'delete') {

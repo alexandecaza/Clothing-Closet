@@ -71,6 +71,11 @@ create table if not exists public.requests (
   updated_at  timestamptz not null default now()
 );
 
+-- True while an approved request is holding its items out of stock for pickup.
+-- (Requests approved before this existed are false: stock comes off at pickup.)
+alter table public.requests
+  add column if not exists stock_reserved boolean not null default false;
+
 create index if not exists requests_status_created_idx
   on public.requests (status, created_at desc);
 create index if not exists requests_contact_created_idx
@@ -127,11 +132,12 @@ grant execute on function public.is_admin() to anon, authenticated;
 
 -- ---------------------------------------------------------------------------
 -- Request status rules
---   pending  → approved | denied
---   approved → pending (undo) | denied
+--   pending  → approved (items set aside: stock goes down) | denied
+--   approved → fulfilled (picked up) | pending or denied (items go back)
 --   denied   → pending (reopen)
---   anything → fulfilled ONLY via fulfill_request(), which adjusts stock
---   fulfilled is final (prevents decrementing stock twice)
+--   fulfilled is final
+-- Every status change goes through change_request_status(), which moves stock
+-- in the same transaction. Direct updates to status are refused.
 -- ---------------------------------------------------------------------------
 
 create or replace function public.guard_request_status()
@@ -140,18 +146,19 @@ language plpgsql
 set search_path = ''
 as $$
 begin
+  if (new.status is distinct from old.status
+      or new.stock_reserved is distinct from old.stock_reserved)
+     and coalesce(current_setting('closet.status_change', true), '') <> 'on' then
+    raise exception 'Use the buttons in the admin to change a request''s status, so stock stays correct.';
+  end if;
+
   if new.status is distinct from old.status then
     if old.status = 'fulfilled' then
       raise exception 'This request was already picked up and can''t be changed.';
     end if;
 
-    if new.status = 'fulfilled'
-       and coalesce(current_setting('closet.fulfilling', true), '') <> 'on' then
-      raise exception 'Use "Mark picked up" to fulfill a request so stock is updated.';
-    end if;
-
     if not (
-         (old.status = 'pending'  and new.status in ('approved', 'denied', 'fulfilled'))
+         (old.status = 'pending'  and new.status in ('approved', 'denied'))
       or (old.status = 'approved' and new.status in ('pending', 'denied', 'fulfilled'))
       or (old.status = 'denied'   and new.status = 'pending')
     ) then
@@ -173,6 +180,24 @@ $$;
 drop trigger if exists requests_guard_status on public.requests;
 create trigger requests_guard_status before update on public.requests
   for each row execute function public.guard_request_status();
+
+-- Deleting a request that's holding items would lose them from stock for good.
+create or replace function public.guard_request_delete()
+returns trigger
+language plpgsql
+set search_path = ''
+as $$
+begin
+  if old.status = 'approved' and old.stock_reserved then
+    raise exception 'This request is holding items for pickup. Deny it or move it back to pending first so they go back into stock.';
+  end if;
+  return old;
+end;
+$$;
+
+drop trigger if exists requests_guard_delete on public.requests;
+create trigger requests_guard_delete before delete on public.requests
+  for each row execute function public.guard_request_delete();
 
 
 -- ---------------------------------------------------------------------------
@@ -508,18 +533,27 @@ grant execute on function public.request_status(text) to anon, authenticated;
 
 
 -- ---------------------------------------------------------------------------
--- Admin: mark a request picked up — the one place stock is decremented
+-- Admin: change a request's status — the only place stock moves for requests
+--   approve              → items come OUT of stock right away (set aside), so
+--                          no other family can request them. Refused if
+--                          there isn't enough stock.
+--   approved → pending / denied → the set-aside items go back INTO stock
+--   approved → fulfilled (picked up) → no change; they're already out
 -- ---------------------------------------------------------------------------
 
-create or replace function public.fulfill_request(p_id uuid)
-returns void
+drop function if exists public.fulfill_request(uuid);
+
+create or replace function public.change_request_status(p_id uuid, p_status text)
+returns public.requests
 language plpgsql
 security definer
 set search_path = ''
 as $$
 declare
-  v_req  public.requests%rowtype;
-  v_line jsonb;
+  v_req   public.requests%rowtype;
+  v_line  jsonb;
+  v_item  public.items%rowtype;
+  v_short text := '';
 begin
   if not public.is_admin() then
     raise exception 'Not authorized.' using errcode = '42501';
@@ -529,26 +563,98 @@ begin
   if not found then
     raise exception 'Request not found.';
   end if;
-  if v_req.status not in ('pending', 'approved') then
-    raise exception 'This request is already %.', v_req.status;
+  if v_req.status = p_status then
+    return v_req;
   end if;
 
-  for v_line in select * from jsonb_array_elements(v_req.items) loop
-    -- Items deleted since the request was made are simply skipped.
-    update public.items
-       set quantity = greatest(quantity - (v_line ->> 'qty')::int, 0)
-     where id = (v_line ->> 'itemId')::uuid;
-  end loop;
+  if p_status = 'approved' then
+    if v_req.status <> 'pending' then
+      raise exception 'Only pending requests can be approved.';
+    end if;
 
-  perform set_config('closet.fulfilling', 'on', true);
-  update public.requests set status = 'fulfilled' where id = p_id;
-  perform set_config('closet.fulfilling', '', true);
+    -- Lock the items (in a fixed order) and make sure everything is there.
+    for v_line in
+      select value from jsonb_array_elements(v_req.items) order by value ->> 'itemId'
+    loop
+      select * into v_item from public.items
+       where id = (v_line ->> 'itemId')::uuid
+         for update;
+      if not found then
+        v_short := v_short || format('%s (size %s) is no longer in inventory. ',
+                                     v_line ->> 'name', v_line ->> 'size');
+      elsif v_item.quantity < (v_line ->> 'qty')::int then
+        v_short := v_short || format('%s (size %s): wants %s, only %s in stock. ',
+                                     v_item.name, v_item.size, v_line ->> 'qty', v_item.quantity);
+      end if;
+    end loop;
+
+    if v_short <> '' then
+      raise exception 'Not enough stock to approve. %', btrim(v_short);
+    end if;
+
+    for v_line in select value from jsonb_array_elements(v_req.items) loop
+      update public.items
+         set quantity = quantity - (v_line ->> 'qty')::int
+       where id = (v_line ->> 'itemId')::uuid;
+    end loop;
+
+    perform set_config('closet.status_change', 'on', true);
+    update public.requests set status = 'approved', stock_reserved = true
+     where id = p_id returning * into v_req;
+    perform set_config('closet.status_change', '', true);
+    return v_req;
+  end if;
+
+  if v_req.status = 'approved' and p_status in ('pending', 'denied') then
+    if v_req.stock_reserved then
+      for v_line in select value from jsonb_array_elements(v_req.items) loop
+        -- Items deleted in the meantime are skipped.
+        update public.items
+           set quantity = quantity + (v_line ->> 'qty')::int
+         where id = (v_line ->> 'itemId')::uuid;
+      end loop;
+    end if;
+
+    perform set_config('closet.status_change', 'on', true);
+    update public.requests set status = p_status, stock_reserved = false
+     where id = p_id returning * into v_req;
+    perform set_config('closet.status_change', '', true);
+    return v_req;
+  end if;
+
+  if p_status = 'fulfilled' then
+    if v_req.status <> 'approved' then
+      raise exception 'Approve the request before marking it picked up.';
+    end if;
+
+    -- Approved before items were set aside at approval: take them out now.
+    if not v_req.stock_reserved then
+      for v_line in select value from jsonb_array_elements(v_req.items) loop
+        update public.items
+           set quantity = greatest(quantity - (v_line ->> 'qty')::int, 0)
+         where id = (v_line ->> 'itemId')::uuid;
+      end loop;
+    end if;
+
+    perform set_config('closet.status_change', 'on', true);
+    update public.requests set status = 'fulfilled', stock_reserved = false
+     where id = p_id returning * into v_req;
+    perform set_config('closet.status_change', '', true);
+    return v_req;
+  end if;
+
+  -- pending → denied, denied → pending: no stock involved.
+  -- (The status trigger rejects any other transition.)
+  perform set_config('closet.status_change', 'on', true);
+  update public.requests set status = p_status where id = p_id returning * into v_req;
+  perform set_config('closet.status_change', '', true);
+  return v_req;
 end;
 $$;
 
-revoke all on function public.fulfill_request(uuid) from public;
-revoke all on function public.fulfill_request(uuid) from anon;
-grant execute on function public.fulfill_request(uuid) to authenticated;
+revoke all on function public.change_request_status(uuid, text) from public;
+revoke all on function public.change_request_status(uuid, text) from anon;
+grant execute on function public.change_request_status(uuid, text) to authenticated;
 
 
 -- ---------------------------------------------------------------------------

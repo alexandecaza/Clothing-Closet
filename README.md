@@ -51,7 +51,7 @@ Plan for about 30 minutes. You need a free [GitHub](https://github.com), [Supaba
 That one script creates:
 - the `items`, `requests`, `settings` and `admins` tables;
 - Row Level Security policies (the real access rules, see [Security](#how-the-security-works));
-- the `submit_request`, `request_status` and `fulfill_request` server functions;
+- the `submit_request`, `request_status` and `change_request_status` server functions;
 - a public-read `item-photos` storage bucket that only coordinators can write to.
 
 You can safely run it again later, for example after updating the project.
@@ -155,7 +155,7 @@ Do these in order, so the live site never asks for a check it can't show.
 
 1. **Create the widget.** In the [Cloudflare dashboard](https://dash.cloudflare.com), open **Turnstile** (search for it if it's not in the sidebar) → **Add widget**.
    - Name: e.g. `Clothing Closet`
-   - Hostnames: your Pages address, e.g. `clothing-closet.pages.dev`, plus any custom domain. Add `localhost` too if you test locally.
+   - Hostnames: the exact address people use, e.g. `clothing-closet.pages.dev` or, if you deployed as a Worker, `clothing-closet.YOUR-NAME.workers.dev`, plus any custom domain. Add `localhost` too if you test locally. If the address isn't listed, the check silently fails with Cloudflare error **110200** and nobody can send requests.
    - Widget mode: **Managed**
    - Click **Create**, then copy the **Site Key** and the **Secret Key**.
 2. **Put the site key in the website.** In `js/config.js`:
@@ -194,11 +194,12 @@ To change these numbers, edit the constants at the top of `public.submit_request
 - **Inventory:** use − / + or type a number to change stock; it saves automatically. **Edit** opens the full form. **Save & add another** keeps the category/size/gender/condition filled in, for entering a pile of donations quickly. Setting stock to 0 takes an item out of the default catalog view without deleting it. Families only see it if they turn on "Show out-of-stock", and they can't request it.
 - **Photos** are resized in the browser to 1200px (plus a 240px thumbnail) before upload, so a 5 MB phone photo becomes roughly 150 KB.
 - **Requests** move **Pending → Approved → Picked up**, or **Denied**:
-  - *Approve* doesn't touch stock. Contact the family to arrange pickup.
-  - *Mark picked up* is the only step that lowers stock, by each requested quantity, never below 0. A confirmation shows exactly what will change.
-  - *Deny* closes the request with no stock change. The app doesn't send messages, so let the family know yourself.
-  - A **"Stock short"** flag means a request asks for more than is on the shelf. **"Competing requests"** means several open requests together want more than you have.
-  - Once a request is picked up it's final, so stock can't be subtracted twice. Old records can be deleted for privacy.
+  - *Approve* **sets the items aside**: they come out of stock immediately, so no other family can see them as available or request them while you arrange pickup. A confirmation shows exactly how stock will change. If there isn't enough stock, approval is refused and you're told which items are short.
+  - *Mark picked up* closes the request. Stock doesn't change again, because the items already came out at approval.
+  - *Deny*, or *Back to pending*, on an approved request puts its set-aside items back into stock. Denying a pending request changes nothing. The app doesn't send messages, so let the family know yourself.
+  - In **Inventory**, "+ 2 set aside for pickup" under a stock number means two more are on the shelf, waiting for an approved family. Pieces on your shelf = stock + set aside.
+  - A **"Stock short"** flag means a pending request asks for more than is available. **"Competing requests"** means several pending requests together want more than you have; whoever you approve first gets the items.
+  - Once a request is picked up it's final. Records can be deleted for privacy once they're picked up or denied.
 - **Settings:** closet name, max items per request (the server enforces it too), and changing your password.
 
 ### Customizing sizes and categories
@@ -214,7 +215,7 @@ All rules live in `supabase/schema.sql` and are enforced by the database, not th
 |---|---|---|
 | Public (no login) | Read items (except **internal notes**, which are withheld at the column level), read settings, create a request **only through `submit_request()`**, which needs a valid robot check and is rate-limited, and look up a request's **status** by reference code (also rate-limited) | Read any request or anyone's contact info; add, edit or delete items; change settings; upload photos |
 | Signed-in account **not** in `admins` | Nothing beyond the public | Same as above |
-| Coordinator (in `admins`) | Everything: items, photos, requests, settings | Mark a request fulfilled without going through `fulfill_request()` (which adjusts stock); edit what a family asked for |
+| Coordinator (in `admins`) | Everything: items, photos, requests, settings | Change a request's status without going through `change_request_status()` (which moves stock in the same step); delete a request that's holding items; edit what a family asked for |
 
 `submit_request()` re-checks everything on the server: that the name and contact are present, that every item exists and has enough stock, and that the total is under the cap. It copies item names and sizes from the database, not from the browser. The page's own checks are only there for convenience.
 

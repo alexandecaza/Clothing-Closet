@@ -31,12 +31,29 @@ function loadScript() {
 
 const DISABLED = { enabled: false, getToken: async () => '', reset() {}, remove() {} };
 
+// Turnstile error codes that mean "this site is set up wrong", not "try again".
+// https://developers.cloudflare.com/turnstile/troubleshooting/client-side-errors/error-codes/
+function describeError(code) {
+  const c = String(code || '');
+  if (c.startsWith('110200')) {
+    return `The robot check isn't set up for this web address (${location.hostname}). ` +
+      'The site owner needs to add it to the Turnstile widget’s hostnames in Cloudflare.';
+  }
+  if (c.startsWith('1101') || c.startsWith('400020')) {
+    return 'The robot check is misconfigured (invalid site key). The site owner needs to check TURNSTILE_SITE_KEY in js/config.js.';
+  }
+  if (c.startsWith('600') || c.startsWith('300')) {
+    return 'The robot check couldn’t confirm this browser. Try reloading the page, or turn off VPNs / strict privacy extensions for this site.';
+  }
+  return `The robot check ran into a problem (Cloudflare error ${c || 'unknown'}). Please reload the page and try again.`;
+}
+
 // Renders a widget into `container`. Call getToken() when submitting, and
 // reset() afterwards — every token works only once.
 export function mountTurnstile(container, { action }) {
   if (!SITE_KEY || !container) return DISABLED;
 
-  const state = { token: '', widgetId: null, loadError: '' };
+  const state = { token: '', widgetId: null, loadError: '', errorCode: '' };
 
   const ready = loadScript()
     .then((turnstile) => {
@@ -46,9 +63,16 @@ export function mountTurnstile(container, { action }) {
         action,
         theme: 'auto',
         appearance: 'interaction-only',
-        callback: (token) => { state.token = token; },
+        callback: (token) => {
+          state.token = token;
+          state.errorCode = '';
+        },
         'expired-callback': () => { state.token = ''; },
-        'error-callback': () => { state.token = ''; },
+        'error-callback': (code) => {
+          state.token = '';
+          state.errorCode = String(code || 'unknown');
+          console.warn(`[Clothing Closet] Turnstile error ${state.errorCode}: ${describeError(code)}`);
+        },
       });
     })
     .catch((err) => { state.loadError = err.message; });
@@ -60,6 +84,7 @@ export function mountTurnstile(container, { action }) {
       if (state.loadError) throw new Error(state.loadError);
       const started = Date.now();
       while (!state.token) {
+        if (state.errorCode) throw new Error(describeError(state.errorCode));
         if (Date.now() - started > timeoutMs) {
           throw new Error('Please complete the “I’m not a robot” check, then try again.');
         }
