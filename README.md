@@ -17,7 +17,7 @@ It's a plain static site (HTML/CSS/JS, no build step) hosted free on **Cloudflar
 index.html              Public catalog (families)
 admin/index.html        Coordinator admin (sign-in required)
 css/styles.css          All styles, light + dark mode
-js/config.js            ← your Supabase URL and public key go here
+js/config.js            ← your Supabase URL and public keys go here (live + optional local test)
 js/constants.js         Sizes, categories, conditions (edit to fit your closet)
 js/shared.js            Helpers used by both pages
 js/image.js             In-browser photo resizing before upload
@@ -26,7 +26,10 @@ js/catalog.js           Catalog logic
 js/admin.js             Admin logic
 js/supabase-client.js   Loads the Supabase library from a CDN
 supabase/schema.sql     Database tables, security rules, storage rules
-_headers                Security headers for Cloudflare Pages
+_headers                Security headers for Cloudflare Pages / Workers
+.assetsignore           Files Cloudflare Workers must not publish (.git, README, dev/, …)
+dev/server.py           Local preview server: demo mode or test-database mode
+dev/mock-supabase.js    Fake database used by demo mode (never deployed)
 .github/workflows/keepalive.yml   Optional: keeps the free Supabase project awake
 ```
 
@@ -71,11 +74,14 @@ Even if sign-ups were left on, a random account gets nothing: the rules only tru
 1. In Supabase, open **Project Settings** → **API Keys** (or click **Connect** at the top of the dashboard).
 2. Copy the **Project URL**, e.g. `https://abcdxyz.supabase.co`.
 3. Copy the **publishable** key (`sb_publishable_…`). On older projects this is called the **anon public** key; either works.
-4. Open `js/config.js` and paste them in:
+4. Open `js/config.js` and paste them into the `LIVE` section:
 
    ```js
-   export const SUPABASE_URL = 'https://abcdxyz.supabase.co';
-   export const SUPABASE_ANON_KEY = 'sb_publishable_...';
+   const LIVE = {
+     SUPABASE_URL: 'https://abcdxyz.supabase.co',
+     SUPABASE_ANON_KEY: 'sb_publishable_...',
+     TURNSTILE_SITE_KEY: '', // filled in at step 9
+   };
    ```
 
 These two values are *meant* to be public. Every visitor's browser uses them, and the database rules decide what each visitor may do. **Never** put the `service_role` / secret key in this file.
@@ -158,9 +164,9 @@ Do these in order, so the live site never asks for a check it can't show.
    - Hostnames: the exact address people use, e.g. `clothing-closet.pages.dev` or, if you deployed as a Worker, `clothing-closet.YOUR-NAME.workers.dev`, plus any custom domain. Add `localhost` too if you test locally. If the address isn't listed, the check silently fails with Cloudflare error **110200** and nobody can send requests.
    - Widget mode: **Managed**
    - Click **Create**, then copy the **Site Key** and the **Secret Key**.
-2. **Put the site key in the website.** In `js/config.js`:
+2. **Put the site key in the website.** In `js/config.js`, in the `LIVE` section:
    ```js
-   export const TURNSTILE_SITE_KEY = '0x4AAAAAAA...';
+   TURNSTILE_SITE_KEY: '0x4AAAAAAA...',
    ```
    Commit and push, then wait for Cloudflare Pages to finish deploying.
 3. **Give the secret key to the database.** In Supabase → **SQL Editor**, run:
@@ -228,16 +234,61 @@ All rules live in `supabase/schema.sql` and are enforced by the database, not th
 
 ---
 
-## Running it locally
+## Testing changes locally
 
-It's a static site, but it uses ES modules, so open it through a local web server rather than double-clicking the file:
+Try changes on your own computer first, then push to GitHub when they work. Pushing to `main` is what updates the live site.
+
+You need Python (already installed if `python --version` works). Run these commands from the project folder. Stop the server with **Ctrl+C**.
+
+### Demo mode: no setup, fake data
 
 ```bash
-python -m http.server 8000
-# then visit http://localhost:8000 and http://localhost:8000/admin/
+python dev/server.py
 ```
 
-It talks to your real Supabase project, so fill in `js/config.js` first. For local password-reset links, also add `http://localhost:8000/admin/` to Supabase's Redirect URLs.
+Open <http://localhost:8765> (catalog) and <http://localhost:8765/admin/> (admin).
+
+- A yellow **Demo mode** bar shows at the top. Everything is sample data kept in your browser, and nothing online is touched.
+- Coordinator sign-in: **any email, password `demo`**.
+- Start over with fresh sample data: <http://localhost:8765/?reset-demo>
+- Best for page, style and wording changes. Just save the file and refresh the browser.
+
+Demo mode imitates the database but **isn't** the real one, so use test mode for database changes.
+
+### Test mode: a real, separate test database
+
+A second free Supabase project gives you the real database, sign-in and photo storage, with none of your live families' data.
+
+1. In Supabase, create another project, e.g. `clothing-closet-test`. The free plan allows two.
+2. Set it up like the live one: run `supabase/schema.sql` in its **SQL Editor** (step 2), and create yourself a coordinator (step 5).
+3. Give it Cloudflare's test robot-check secret, which always passes. In its SQL Editor:
+   ```sql
+   select vault.create_secret('1x0000000000000000000000000000000AA', 'turnstile_secret');
+   ```
+   (Leave Auth → CAPTCHA protection off in the test project.)
+4. In `js/config.js`, fill in the `LOCAL_TEST` section with the test project's URL and publishable key. On `localhost` the site then uses the test project automatically; the live site keeps using `LIVE`.
+5. Run:
+   ```bash
+   python dev/server.py --real
+   ```
+
+If `LOCAL_TEST` is empty, `--real` connects to the **live** database, and a red warning bar at the top says so.
+
+For password-reset emails in test mode, add `http://localhost:8765/admin/` to the test project's **Authentication → URL Configuration → Redirect URLs**.
+
+### Getting a change live
+
+1. Edit the files and check them in demo or test mode.
+2. **If you changed `supabase/schema.sql`:** run it in the test project first. When it works, run it in the **live** project right before pushing.
+3. Commit and push:
+   ```bash
+   git add .
+   git commit -m "Describe the change"
+   git push
+   ```
+4. Cloudflare rebuilds the live site in about a minute.
+
+Want to try something bigger without it going live? Work on a branch (`git switch -c my-idea`) and push that. Only `main` updates the live site. Merge into `main` when it's ready (`git switch main`, `git merge my-idea`, `git push`). You can check which branches Cloudflare builds under your Worker's **Settings → Build**.
 
 ## Troubleshooting
 

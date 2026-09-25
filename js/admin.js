@@ -1,7 +1,7 @@
 // Coordinator admin: sign-in, inventory CRUD, request queue, settings.
 import { SIZES, CATEGORIES, GENDERS, CONDITIONS, PHOTO_BUCKET, REQUEST_STATUSES, DEFAULT_SETTINGS } from './constants.js';
 import {
-  isConfigured, showSetupNotice, photoUrl, escapeHtml, compareItems, formatRef, pluralize, formatDate,
+  isConfigured, showSetupNotice, showDevBanner, photoUrl, escapeHtml, compareItems, formatRef, pluralize, formatDate,
   relativeTime, contactHref, friendlyError, debounce, preserveFocus, toast, fillSelect,
 } from './shared.js';
 import { preparePhoto, formatBytes } from './image.js';
@@ -1090,6 +1090,7 @@ async function init() {
   wireSettings();
   window.addEventListener('hashchange', route);
 
+  showDevBanner();
   if (!isConfigured()) {
     showSetupNotice($('setup'));
     return;

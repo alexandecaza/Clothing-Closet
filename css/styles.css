@@ -435,6 +435,18 @@ code {
   gap: 6px;
 }
 
+/* Local development: warns when a localhost copy uses live data */
+.dev-banner {
+  padding: 8px var(--gutter-r) 8px var(--gutter);
+  padding-top: max(8px, env(safe-area-inset-top));
+  background: var(--brick);
+  color: var(--on-brick);
+  font-size: 13px;
+  font-weight: 600;
+  text-align: center;
+}
+.dev-banner[data-tone='demo'] { background: var(--marigold); color: var(--on-marigold); }
+
 /* ---------- Toast ---------- */
 
 .toast {

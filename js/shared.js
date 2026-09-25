@@ -1,4 +1,5 @@
 // Helpers used by both the public catalog and the admin.
+import * as config from './config.js';
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from './config.js';
 import { PHOTO_BUCKET, SIZES } from './constants.js';
 
@@ -13,6 +14,28 @@ export function showSetupNotice(container) {
       <p>This closet isn't connected to its database yet. Add your Supabase
       project URL and key to <code>js/config.js</code> — see step 4 of the README.</p>
     </div>`;
+}
+
+// Local development only: label demo mode, and warn loudly when a localhost
+// copy is pointed at the live database. Never shows on the live site.
+export function showDevBanner() {
+  let text = '';
+  let tone = '';
+  if (config.DEMO_MODE) {
+    text = 'Demo mode: fake sample data, nothing online is touched. Coordinator password: demo';
+    tone = 'demo';
+  } else if (config.USING_LIVE_DATA_LOCALLY) {
+    text = 'Local copy connected to the LIVE database: changes here affect real families. ' +
+      'For safe testing, see README → “Testing changes locally”.';
+    tone = 'live';
+  }
+  if (!text) return;
+  const bar = document.createElement('div');
+  bar.className = 'dev-banner';
+  bar.dataset.tone = tone;
+  bar.setAttribute('role', 'status');
+  bar.textContent = text;
+  document.body.prepend(bar);
 }
 
 export function photoUrl(path) {

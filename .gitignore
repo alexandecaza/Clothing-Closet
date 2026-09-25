@@ -2,3 +2,5 @@
 Thumbs.db
 node_modules/
 .env
+dev/.demo-uploads/
+__pycache__/

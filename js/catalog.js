@@ -1,7 +1,7 @@
 // Public catalog: browse, filter, build a request list, submit it.
 import { SIZE_BANDS, SIZES, CATEGORIES, GENDERS, CONDITIONS, DEFAULT_SETTINGS } from './constants.js';
 import {
-  isConfigured, showSetupNotice, photoUrl, escapeHtml, compareItems, formatRef, pluralize,
+  isConfigured, showSetupNotice, showDevBanner, photoUrl, escapeHtml, compareItems, formatRef, pluralize,
   isValidContact, friendlyError, debounce, preserveFocus, toast, fillSelect,
 } from './shared.js';
 import { mountTurnstile } from './turnstile.js';
@@ -659,6 +659,7 @@ async function init() {
   wireDialogs();
   renderListButtons();
 
+  showDevBanner();
   if (!isConfigured()) {
     showSetupNotice($('setup'));
     renderCatalog();
