@@ -116,8 +116,14 @@ function focusFallbacks(key) {
 
 function renderListButtons() {
   const label = `${listTotal()}/${maxItems()}`;
-  $('list-count').textContent = label;
-  $('list-count-mobile').textContent = label;
+  for (const pill of [$('list-count'), $('list-count-mobile')]) {
+    if (pill.textContent === label) continue;
+    pill.textContent = label;
+    // Restart the little "bump" so each change is noticed
+    pill.classList.remove('is-bumping');
+    void pill.offsetWidth;
+    pill.classList.add('is-bumping');
+  }
   $('open-list').setAttribute('aria-label', `Request list, ${listTotal()} of ${maxItems()} items`);
   $('mobile-bar').hidden = listTotal() === 0;
 }
@@ -186,9 +192,12 @@ function setRovingFocus(tick, focus) {
 }
 
 function renderRuler() {
+  // Counts follow the other filters (e.g. Gender), so they show what's actually there
   const counts = new Map();
   for (const item of state.items) {
-    if (item.quantity > 0) counts.set(item.size, (counts.get(item.size) || 0) + 1);
+    if (item.quantity > 0 && matches(item, { ignoreSizes: true })) {
+      counts.set(item.size, (counts.get(item.size) || 0) + 1);
+    }
   }
   for (const tick of $('ruler').querySelectorAll('.tick')) {
     const { size } = tick.dataset;
@@ -208,10 +217,10 @@ function renderRuler() {
 // Catalog grid
 // ---------------------------------------------------------------------------
 
-function matches(item) {
+function matches(item, { ignoreSizes = false } = {}) {
   const f = state.filters;
   if (!f.showOut && item.quantity <= 0) return false;
-  if (f.sizes.size && !f.sizes.has(item.size)) return false;
+  if (!ignoreSizes && f.sizes.size && !f.sizes.has(item.size)) return false;
   if (f.category && item.category !== f.category) return false;
   if (f.gender && item.gender !== f.gender) return false;
   if (f.condition && item.condition !== f.condition) return false;
@@ -276,9 +285,16 @@ function card(item) {
     </li>`;
 }
 
+// Cards animate in when the set of visible items changes (new filters, first
+// load), but not when only a quantity on the list changes.
+let lastCatalogKey = '';
+
 function renderCatalog() {
   const list = $('catalog');
   const visible = state.items.filter(matches).sort(compareItems);
+  const key = visible.map((item) => item.id).join(',');
+  const entering = key !== lastCatalogKey;
+  lastCatalogKey = key;
   list.removeAttribute('aria-busy');
 
   const count = $('result-count');
@@ -300,6 +316,10 @@ function renderCatalog() {
     return;
   }
   list.innerHTML = visible.map(card).join('');
+  list.classList.toggle('is-entering', entering);
+  if (entering) {
+    [...list.children].forEach((el, i) => el.style.setProperty('--i', Math.min(i, 14)));
+  }
 }
 
 function onFiltersChanged() {
@@ -309,7 +329,7 @@ function onFiltersChanged() {
 
 function wireFilters() {
   fillSelect($('f-category'), CATEGORIES, 'Any category');
-  fillSelect($('f-gender'), GENDERS, 'Anyone');
+  fillSelect($('f-gender'), GENDERS, 'Any gender');
   fillSelect($('f-condition'), CONDITIONS, 'Any condition');
 
   const bind = (id, key, read = (el) => el.value) => {

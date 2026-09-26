@@ -16,11 +16,13 @@ It's a plain static site (HTML/CSS/JS, no build step) hosted free on **Cloudflar
 ```
 index.html              Public catalog (families)
 admin/index.html        Coordinator admin (sign-in required)
-css/styles.css          All styles, light + dark mode
+css/styles.css          All styles: neutral theme, hover and motion effects
 js/config.js            ← your Supabase URL and public keys go here (live + optional local test)
 js/constants.js         Sizes, categories, conditions (edit to fit your closet)
 js/shared.js            Helpers used by both pages
 js/image.js             In-browser photo resizing before upload
+js/shader.js            Animated WebGL background (decorative; plain colour if unsupported)
+js/motion.js            Card hover tilt/glow and the scrolled-header shadow
 js/turnstile.js         Cloudflare Turnstile robot check (bot protection)
 js/catalog.js           Catalog logic
 js/admin.js             Admin logic

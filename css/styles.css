@@ -4,20 +4,20 @@
    ========================================================================== */
 
 :root {
-  --bg: #e4e6d9;          /* sage-oat */
-  --bg-sunk: #d8dbcb;
-  --paper: #f3f4ec;       /* tag card stock */
-  --panel: #eef0e6;
-  --ink: #1d2721;
-  --ink-soft: #3c4840;
-  --muted: #5a665e;
-  --line: #c3c8b6;
-  --line-strong: #9fa692;
+  --bg: #eeebe5;          /* warm linen; the shader paints over this when it can */
+  --bg-sunk: #e3dfd7;
+  --paper: #faf9f6;       /* tag card stock */
+  --panel: #f4f2ed;
+  --ink: #211f1c;
+  --ink-soft: #46423c;
+  --muted: #6b655c;
+  --line: #dbd6cc;
+  --line-strong: #a39b8d;
 
   --pine: #24503d;
   --pine-hover: #1b3f30;
-  --on-pine: #f3f4ec;
-  --pine-tint: #d3e0d6;
+  --on-pine: #f7f6f2;
+  --pine-tint: #dde6de;
 
   --marigold: #e0a82e;
   --marigold-tint: #f4e2b3;
@@ -34,6 +34,11 @@
 
   --focus: #24503d;
 
+  --shadow-sm: 0 1px 2px rgb(45 38 25 / 0.06), 0 1px 1px rgb(45 38 25 / 0.04);
+  --shadow-lg: 0 18px 36px -14px rgb(45 38 25 / 0.32), 0 4px 10px -4px rgb(45 38 25 / 0.12);
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+
   --font-slab: 'Zilla Slab', 'Rockwell', 'Roboto Slab', Georgia, serif;
   --font-sans: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
 
@@ -42,64 +47,6 @@
   --gutter-r: max(16px, env(safe-area-inset-right));
 
   color-scheme: light;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme='light']) {
-    --bg: #151b18;
-    --bg-sunk: #101512;
-    --paper: #1f2723;
-    --panel: #1b221e;
-    --ink: #e5e8de;
-    --ink-soft: #c7ccc0;
-    --muted: #9ea89f;
-    --line: #34403a;
-    --line-strong: #4d5a52;
-    --pine: #86bba1;
-    --pine-hover: #9fcdb6;
-    --on-pine: #0f1a14;
-    --pine-tint: #213a2e;
-    --marigold: #e6b547;
-    --marigold-tint: #3d3218;
-    --on-marigold: #1f1804;
-    --brick: #d98372;
-    --brick-hover: #e79a8a;
-    --on-brick: #1f0d09;
-    --brick-tint: #3b221d;
-    --tape: #d6a53a;
-    --tape-edge: #a97f25;
-    --tape-ink: #1f1804;
-    --focus: #e6b547;
-    color-scheme: dark;
-  }
-}
-
-:root[data-theme='dark'] {
-  --bg: #151b18;
-  --bg-sunk: #101512;
-  --paper: #1f2723;
-  --panel: #1b221e;
-  --ink: #e5e8de;
-  --ink-soft: #c7ccc0;
-  --muted: #9ea89f;
-  --line: #34403a;
-  --line-strong: #4d5a52;
-  --pine: #86bba1;
-  --pine-hover: #9fcdb6;
-  --on-pine: #0f1a14;
-  --pine-tint: #213a2e;
-  --marigold: #e6b547;
-  --marigold-tint: #3d3218;
-  --on-marigold: #1f1804;
-  --brick: #d98372;
-  --brick-hover: #e79a8a;
-  --on-brick: #1f0d09;
-  --brick-tint: #3b221d;
-  --tape: #d6a53a;
-  --tape-edge: #a97f25;
-  --tape-ink: #1f1804;
-  --focus: #e6b547;
-  color-scheme: dark;
 }
 
 /* ---------- Base ---------- */
@@ -1245,6 +1192,237 @@ dialog::backdrop { background: rgb(12 18 14 / 0.45); }
 .panel .btn { justify-self: start; }
 
 /* ==========================================================================
+   Motion & interaction
+   Decorative only. Hover effects are limited to devices that can hover, and
+   everything is switched off for prefers-reduced-motion (end of file).
+   ========================================================================== */
+
+::selection { background: var(--marigold-tint); color: var(--ink); }
+
+/* The WebGL background from js/shader.js; the plain --bg shows until it's ready */
+.bg-shader {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  display: block;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 1.2s ease;
+}
+.bg-shader.is-ready { opacity: 1; }
+
+@keyframes rise { from { opacity: 0; transform: translateY(14px); } }
+@keyframes fade-in { from { opacity: 0; } }
+@keyframes pop { 0% { transform: scale(1); } 35% { transform: scale(1.18); } 100% { transform: scale(1); } }
+@keyframes bump {
+  0% { transform: scale(1); }
+  30% { transform: scale(1.4) rotate(-6deg); }
+  60% { transform: scale(0.92); }
+  100% { transform: scale(1); }
+}
+@keyframes swing {
+  0% { transform: rotate(0); }
+  20% { transform: rotate(-18deg); }
+  45% { transform: rotate(11deg); }
+  70% { transform: rotate(-5deg); }
+  100% { transform: rotate(0); }
+}
+@keyframes modal-in { from { opacity: 0; transform: translateY(14px) scale(0.97); } }
+@keyframes sheet-in-side { from { transform: translateX(100%); } }
+@keyframes sheet-in-up { from { transform: translateY(100%); } }
+
+/* ---------- Header: frosted glass over the shader ---------- */
+
+.site-header {
+  background: rgb(238 235 229 / 0.7);
+  -webkit-backdrop-filter: blur(14px) saturate(1.3);
+  backdrop-filter: blur(14px) saturate(1.3);
+  transition: box-shadow 0.3s var(--ease-out), background-color 0.3s;
+}
+.site-header.is-scrolled {
+  background: rgb(238 235 229 / 0.84);
+  box-shadow: 0 10px 28px -18px rgb(45 38 25 / 0.45);
+}
+@media (min-width: 721px) {
+  .site-header { position: sticky; top: 0; z-index: 40; }
+}
+
+.brand-mark { transform-origin: 70% 30%; }
+.brand:hover .brand-mark { animation: swing 0.9s var(--ease-out); }
+
+.intro-title { animation: rise 0.7s var(--ease-out) backwards; }
+.intro { animation: rise 0.7s 0.08s var(--ease-out) backwards; }
+.filters { animation: rise 0.7s 0.16s var(--ease-out) backwards; }
+
+/* ---------- Buttons and links ---------- */
+
+.btn {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+  transition: background-color 0.2s, border-color 0.2s, color 0.2s,
+              box-shadow 0.25s var(--ease-out), transform 0.2s var(--ease-out);
+}
+
+/* A light sweep across primary buttons */
+.btn-primary::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background: linear-gradient(110deg, transparent 30%, rgb(255 255 255 / 0.3) 50%, transparent 70%);
+  transform: translateX(-120%);
+  transition: transform 0.7s var(--ease-out);
+  pointer-events: none;
+}
+
+@media (hover: hover) {
+  .btn:hover:not(:disabled) {
+    transform: translateY(-1px);
+    box-shadow: 0 8px 16px -10px rgb(45 38 25 / 0.5);
+  }
+  .btn-primary:hover:not(:disabled)::after { transform: translateX(120%); }
+}
+.btn:active:not(:disabled) { transform: scale(0.97); box-shadow: none; transition-duration: 0.08s; }
+
+a, .link-button {
+  text-decoration-color: color-mix(in srgb, currentColor 40%, transparent);
+  transition: color 0.2s, text-decoration-color 0.2s, text-underline-offset 0.2s var(--ease-out);
+}
+a:hover, .link-button:hover { text-decoration-color: currentColor; text-underline-offset: 4px; }
+
+.icon-button { transition: background-color 0.2s, color 0.2s, transform 0.35s var(--ease-spring); }
+.icon-button[data-close]:hover { transform: rotate(90deg); }
+
+.count-pill.is-bumping { animation: bump 0.5s var(--ease-out); }
+
+.stepper-btn { transition: background-color 0.15s, transform 0.15s var(--ease-spring); }
+.stepper-btn:active:not(:disabled) { transform: scale(0.85); }
+
+/* ---------- Form fields ---------- */
+
+.field input:not([type='checkbox']):not([type='file']),
+.field select,
+.field textarea {
+  transition: border-color 0.2s, box-shadow 0.25s var(--ease-out), background-color 0.2s;
+}
+@media (hover: hover) {
+  .field input:not([type='checkbox']):not([type='file']):hover,
+  .field select:hover,
+  .field textarea:hover { border-color: var(--ink-soft); }
+}
+.field input:focus-visible,
+.field select:focus-visible,
+.field textarea:focus-visible { box-shadow: 0 0 0 5px var(--pine-tint); background: #fff; }
+
+/* ---------- Size ruler ---------- */
+
+.tick-label { transition: transform 0.3s var(--ease-spring), background-color 0.2s, color 0.2s; }
+.tick::before { transition: height 0.25s var(--ease-spring), width 0.2s, background-color 0.2s; }
+@media (hover: hover) {
+  .tick:hover:not([aria-pressed='true'])::before { height: 25px; }
+  .tick:hover .tick-label { transform: translateY(-2px); }
+}
+.tick[aria-pressed='true'] .tick-label { animation: pop 0.35s var(--ease-spring); }
+
+/* ---------- Swing tags ---------- */
+
+.tag {
+  box-shadow: var(--shadow-sm);
+  transform: perspective(900px) rotateX(var(--rx, 0deg)) rotateY(var(--ry, 0deg)) translateY(var(--lift, 0px));
+  transition: transform 0.45s var(--ease-out), box-shadow 0.45s var(--ease-out), border-color 0.3s;
+}
+
+/* A soft highlight that follows the mouse, and a glowing edge near it
+   (--mx / --my are set by js/motion.js) */
+.tag::before,
+.tag::after,
+.req-card::after,
+.panel::after,
+.auth-card::after {
+  content: '';
+  position: absolute;
+  pointer-events: none;
+  border-radius: inherit;
+  opacity: 0;
+  transition: opacity 0.35s;
+}
+.tag::before {
+  inset: 0;
+  z-index: 2;
+  background: radial-gradient(280px circle at var(--mx, 50%) var(--my, 0%), rgb(255 255 255 / 0.4), transparent 55%);
+  mix-blend-mode: soft-light;
+}
+.tag::after,
+.req-card::after,
+.panel::after,
+.auth-card::after {
+  inset: -1px;
+  padding: 1px;
+  background: radial-gradient(200px circle at var(--mx, 50%) var(--my, 0%), var(--marigold), transparent 70%);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+}
+.req-card, .panel, .auth-card { position: relative; }
+
+.tag-photo img { transition: transform 0.8s var(--ease-out), filter 0.3s, opacity 0.3s; }
+.tag-size { transition: background-color 0.25s, color 0.25s, border-color 0.25s; }
+.tag-hole { transition: border-color 0.25s; }
+
+@media (hover: hover) {
+  .tag:hover { --lift: -6px; box-shadow: var(--shadow-lg); z-index: 1; }
+  .tag:hover::before,
+  .tag:hover::after,
+  .req-card:hover::after,
+  .panel:hover::after,
+  .auth-card:hover::after { opacity: 1; }
+  .tag:hover .tag-photo img { transform: scale(1.06); }
+  .tag:hover .tag-hole { border-color: var(--marigold); }
+  .tag:not(.is-out):hover .tag-size { background: var(--pine); color: var(--on-pine); }
+  .tag.is-out:hover .tag-photo img { filter: grayscale(0.4); opacity: 0.8; }
+}
+.tag:focus-within { box-shadow: var(--shadow-lg); }
+
+.catalog.is-entering .tag {
+  animation: rise 0.55s var(--ease-out) backwards;
+  animation-delay: calc(var(--i, 0) * 35ms);
+}
+.empty-state { animation: fade-in 0.4s ease; }
+
+/* ---------- Dialogs and toast ---------- */
+
+dialog[open]::backdrop {
+  -webkit-backdrop-filter: blur(3px);
+  backdrop-filter: blur(3px);
+  animation: fade-in 0.25s ease;
+}
+.modal[open] { animation: modal-in 0.35s var(--ease-out); }
+.sheet[open] { animation: sheet-in-side 0.45s var(--ease-out); }
+@media (max-width: 720px) {
+  .sheet[open] { animation-name: sheet-in-up; }
+}
+
+.toast { transition: opacity 0.25s, transform 0.45s var(--ease-spring); }
+
+.mobile-bar:not([hidden]) { animation: rise 0.4s var(--ease-out); }
+
+/* ---------- Admin ---------- */
+
+.req-card { transition: transform 0.35s var(--ease-out), box-shadow 0.35s var(--ease-out); }
+@media (hover: hover) {
+  .req-card:hover { transform: translateY(-3px); box-shadow: var(--shadow-lg); }
+}
+.admin-nav a { transition: background-color 0.2s, color 0.2s, box-shadow 0.25s var(--ease-out); }
+.admin-nav a:hover:not([aria-current='page']) { box-shadow: inset 0 -3px 0 var(--line-strong); }
+.segmented button { transition: background-color 0.2s, color 0.2s, box-shadow 0.2s; }
+.segmented button:hover:not([aria-selected='true']) { background: rgb(255 255 255 / 0.5); }
+.inv-table tbody tr { transition: background-color 0.15s; }
+.panel, .auth-card { box-shadow: var(--shadow-sm); }
+
+/* ==========================================================================
    Responsive
    ========================================================================== */
 
@@ -1272,7 +1450,9 @@ dialog::backdrop { background: rgb(12 18 14 / 0.45); }
     bottom: 0;
     z-index: 50;
     padding: 10px var(--gutter-r) max(10px, env(safe-area-inset-bottom)) var(--gutter);
-    background: var(--bg);
+    background: rgb(238 235 229 / 0.78);
+    -webkit-backdrop-filter: blur(14px) saturate(1.3);
+    backdrop-filter: blur(14px) saturate(1.3);
     border-top: 1px solid var(--line);
   }
   .mobile-bar .btn { width: 100%; min-height: 46px; }
@@ -1340,7 +1520,12 @@ dialog::backdrop { background: rgb(12 18 14 / 0.45); }
   *, *::before, *::after { transition: none !important; animation: none !important; scroll-behavior: auto !important; }
 }
 
+@media (prefers-reduced-motion: reduce) {
+  .tag, .req-card { transform: none !important; }
+}
+
 @media (forced-colors: active) {
+  .tag::before, .tag::after, .req-card::after, .panel::after, .auth-card::after { display: none; }
   .tick[aria-pressed='true'] .tick-label { outline: 2px solid; }
   .tag-hole { border-color: CanvasText; }
 }
