@@ -136,7 +136,7 @@ def main():
     print()
     if demo:
         print('  DEMO MODE: fake sample data, nothing online is touched.')
-        print('  Coordinator sign-in: any email, password "demo".')
+        print('  Coordinator sign-in: any email, password "demo", then code 123456.')
         print(f'  Fresh sample data: {url}/?reset-demo')
     else:
         print('  REAL MODE: using js/config.js (test database if LOCAL_TEST is filled in, otherwise LIVE).')

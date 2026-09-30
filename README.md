@@ -61,15 +61,17 @@ That one script creates:
 
 You can safely run it again later, for example after updating the project.
 
-### 3. Turn off public sign-ups
+### 3. Lock down sign-in
 
 Only coordinators should have accounts.
 
 1. Go to **Authentication** → **Sign In / Providers** (on some dashboards it's under **Authentication → Settings**).
 2. Turn **off** "Allow new users to sign up".
 3. Leave the **Email** provider enabled. Coordinators sign in with email and password.
+4. Open the **Email** provider and set **Minimum password length** to **12**. Save.
+5. Open **Authentication** → **Multi-Factor** and check that **TOTP (App Authenticator)** is **Enabled**. It is by default.
 
-Even if sign-ups were left on, a random account gets nothing: the rules only trust accounts listed in the `admins` table (step 5).
+Even if sign-ups were left on, a random account gets nothing: the rules only trust accounts listed in the `admins` table (step 5), and only after two-step sign-in (see [Two-step sign-in](#two-step-sign-in)).
 
 ### 4. Connect the site to Supabase
 
@@ -91,7 +93,7 @@ These two values are *meant* to be public. Every visitor's browser uses them, an
 ### 5. Create the first coordinator account
 
 1. In Supabase go to **Authentication** → **Users** → **Add user** → **Create new user**.
-2. Enter the coordinator's email and a password, and tick **Auto Confirm User**. Click **Create user**.
+2. Enter the coordinator's email and a password of at least 12 characters, and tick **Auto Confirm User**. Click **Create user**.
 3. Go back to **SQL Editor** → **New query** and run this, using that email:
 
    ```sql
@@ -99,7 +101,9 @@ These two values are *meant* to be public. Every visitor's browser uses them, an
    select id from auth.users where email = 'coordinator@example.org';
    ```
 
-Repeat for each coordinator. To remove someone's access:
+Repeat for each coordinator. The first time each coordinator signs in, the admin walks them through setting up two-step sign-in with an authenticator app on their phone. Ask them to do it straight away: until they do, anyone with their password could set it up instead.
+
+To remove someone's access:
 
 ```sql
 delete from public.admins
@@ -181,6 +185,8 @@ Do these in order, so the live site never asks for a check it can't show.
 
 > **Set up the closet before bot protection was added?** Re-run the whole `supabase/schema.sql` once (step 2). It's safe to re-run, and it adds the new protections.
 
+> **Set up the closet before two-step sign-in was added?** Do step 3's password and Multi-Factor settings, then re-run `supabase/schema.sql` in the live project **and push the new site right away**. The new database rules and the new admin page need each other: until both are live, coordinators can't get in. Each coordinator is asked to set up their authenticator app at their next sign-in.
+
 Even before Turnstile is set up, these limits are already on:
 - **5 request attempts per hour** from one internet connection
 - **3 requests per day** from the same phone number or email
@@ -208,7 +214,25 @@ To change these numbers, edit the constants at the top of `public.submit_request
   - In **Inventory**, "+ 2 set aside for pickup" under a stock number means two more are on the shelf, waiting for an approved family. Pieces on your shelf = stock + set aside.
   - A **"Stock short"** flag means a pending request asks for more than is available. **"Competing requests"** means several pending requests together want more than you have; whoever you approve first gets the items.
   - Once a request is picked up it's final. Records can be deleted for privacy once they're picked up or denied.
-- **Settings:** closet name, max items per request (the server enforces it too), and changing your password.
+- **Settings:** closet name, max items per request (the server enforces it too), and changing your password. Changing it needs a code from your authenticator app and signs out your other devices.
+
+### Two-step sign-in
+
+Coordinators sign in with their password **and** a 6-digit code from an authenticator app (Google Authenticator, Microsoft Authenticator, 2FAS, 1Password…). The code changes every 30 seconds. This keeps families' names and contact details safe even if a coordinator's password is guessed, reused elsewhere, or phished.
+
+- **First sign-in:** the admin shows a QR code. Scan it in the authenticator app and type the code it shows.
+- **Every sign-in after that:** password, then the current code.
+- **Forgot password?** The reset email link still asks for the code before you can choose a new password.
+- **Idle sign-out:** the admin signs you out after 30 minutes without clicks, taps or typing, including in tabs you left open.
+
+**Lost or replaced phone.** Someone with access to the Supabase dashboard runs this in the **SQL Editor**, using the coordinator's email:
+
+```sql
+delete from auth.mfa_factors
+where user_id = (select id from auth.users where email = 'coordinator@example.org');
+```
+
+The coordinator then signs in with their password and sets up the new phone. Only do this once you're sure it's really them asking, e.g. by phone or in person, not only by email.
 
 ### Customizing sizes and categories
 Edit the lists in `js/constants.js`. The ruler, filters and forms all use them. Items you've already saved keep their old values, so rename carefully. Shoes aren't included by default because shoe sizes don't fit the clothing ruler. If you want them, add a "Shoes" category and pick the closest size band, or add shoe sizes as their own band in `SIZE_BANDS`.
@@ -223,9 +247,18 @@ All rules live in `supabase/schema.sql` and are enforced by the database, not th
 |---|---|---|
 | Public (no login) | Read items (except **internal notes**, which are withheld at the column level), read settings, create a request **only through `submit_request()`**, which needs a valid robot check and is rate-limited, and look up a request's **status** by reference code (also rate-limited) | Read any request or anyone's contact info; add, edit or delete items; change settings; upload photos |
 | Signed-in account **not** in `admins` | Nothing beyond the public | Same as above |
-| Coordinator (in `admins`) | Everything: items, photos, requests, settings | Change a request's status without going through `change_request_status()` (which moves stock in the same step); delete a request that's holding items; edit what a family asked for |
+| Coordinator who entered only a password (no 6-digit code yet) | Nothing beyond the public, apart from setting up or entering their code | Same as above |
+| Coordinator (in `admins`) who passed two-step sign-in | Everything: items, photos, requests, settings | Change a request's status without going through `change_request_status()` (which moves stock in the same step); delete a request that's holding items; edit what a family asked for |
 
 `submit_request()` re-checks everything on the server: that the name and contact are present, that every item exists and has enough stock, and that the total is under the cap. It copies item names and sizes from the database, not from the browser. The page's own checks are only there for convenience.
+
+**Coordinator sign-in:**
+- **Two-step sign-in is enforced by the database.** `is_admin()` only says yes when the session passed both the password and the authenticator code (Supabase calls this `aal2`). Every table rule, admin function and photo-upload rule goes through it, so skipping the code screen, or calling the API with just a password, gets nothing.
+- Passwords: at least 12 characters (the page also rejects obvious ones), with the same minimum set in Supabase (step 3).
+- Changing a password needs a fresh code, and signs out every other device. So does resetting a forgotten password.
+- Automatic sign-out after 30 minutes idle. **Sign out** ends the session on every device.
+- Supabase Auth limits how many sign-in, reset and code attempts can be made.
+- The admin page is never cached (`Cache-Control: no-store`), can't be framed by other sites, and is only served over HTTPS (`Strict-Transport-Security`).
 
 **Bots and spam** (see [step 9](#9-turn-on-bot-protection-cloudflare-turnstile)):
 - **Robot check:** Cloudflare Turnstile on the request form and on coordinator sign-in / password reset. The database and Supabase Auth verify the tokens with Cloudflare. Each token works once, so it can't be replayed.
@@ -251,7 +284,7 @@ python dev/server.py
 Open <http://localhost:8765> (catalog) and <http://localhost:8765/admin/> (admin).
 
 - A yellow **Demo mode** bar shows at the top. Everything is sample data kept in your browser, and nothing online is touched.
-- Coordinator sign-in: **any email, password `demo`**.
+- Coordinator sign-in: **any email, password `demo`**, then two-step code **`123456`** (the first time, "set up" accepts that code too).
 - Start over with fresh sample data: <http://localhost:8765/?reset-demo>
 - Best for page, style and wording changes. Just save the file and refresh the browser.
 
@@ -295,6 +328,9 @@ Want to try something bigger without it going live? Work on a branch (`git switc
 ## Troubleshooting
 
 - **"This closet isn't connected to its database yet"**: `js/config.js` still has the placeholder values (step 4).
+- **"That code didn't work"** every time: the phone's clock is probably off. Turn on automatic date and time on the phone. Codes are only valid for about 30 seconds.
+- **Lost phone / new phone:** see [Two-step sign-in](#two-step-sign-in).
+- **Everyone was asked to set up two-step sign-in after an update:** that's expected the first time after two-step sign-in was added.
 - **"That account isn't set up as a coordinator"**: the user exists but isn't in the `admins` table (step 5).
 - **"permission denied" / "Not authorized"** in the admin: same cause, or the schema script didn't finish. Re-run `schema.sql`.
 - **Photo won't upload from an iPhone**: some browsers can't read HEIC. On the iPhone, go to Settings → Camera → Formats → *Most Compatible*, or send the photo as JPEG.

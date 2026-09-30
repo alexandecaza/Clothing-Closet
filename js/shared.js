@@ -22,7 +22,7 @@ export function showDevBanner() {
   let text = '';
   let tone = '';
   if (config.DEMO_MODE) {
-    text = 'Demo mode: fake sample data, nothing online is touched. Coordinator password: demo';
+    text = 'Demo mode: fake sample data, nothing online is touched. Coordinator password: demo, sign-in code: 123456';
     tone = 'demo';
   } else if (config.USING_LIVE_DATA_LOCALLY) {
     text = 'Local copy connected to the LIVE database: changes here affect real families. ' +

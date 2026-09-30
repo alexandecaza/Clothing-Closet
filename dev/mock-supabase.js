@@ -4,11 +4,18 @@
 // but it is NOT the real database: test database changes against a real test
 // project instead (README → "Testing changes locally").
 //
-// Coordinator sign-in: any email, password "demo".
+// Coordinator sign-in: any email, password "demo". Two-step sign-in code:
+// 123456 (any authenticator setup is accepted with that code too).
 // Start over with fresh sample data: add ?reset-demo to the address.
 
 const KEY = 'closet.demo-db.v1';
 const DEMO_PASSWORD = 'demo';
+const DEMO_CODE = '123456';
+const DEMO_QR = 'data:image/svg+xml;utf-8,' + encodeURIComponent(
+  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 180 180"><rect width="180" height="180" fill="#fff"/>' +
+  '<rect x="10" y="10" width="160" height="160" fill="none" stroke="#2b3a31" stroke-width="4" stroke-dasharray="8 6"/>' +
+  '<text x="90" y="86" text-anchor="middle" font-family="sans-serif" font-size="16" fill="#2b3a31">Demo QR</text>' +
+  '<text x="90" y="108" text-anchor="middle" font-family="sans-serif" font-size="13" fill="#2b3a31">code: 123456</text></svg>');
 
 const uuid = () => crypto.randomUUID();
 const now = () => new Date().toISOString();
@@ -47,6 +54,7 @@ function seed() {
     requests,
     settings: [{ id: 1, org_name: 'Demo Clothing Closet', max_items_per_request: 5, updated_at: now() }],
     session: null,
+    factors: [],
   };
 }
 
@@ -129,6 +137,8 @@ class Query {
 const rpcs = {
   is_admin: (db, args, admin) => ({ data: admin, error: null }),
 
+  is_admin_account: (db) => ({ data: Boolean(db.session), error: null }),
+
   bot_protection_status: () => ({ data: { turnstile_secret: true }, error: null }),
 
   submit_request(db, args) {
@@ -191,16 +201,64 @@ const rpcs = {
 export function makeClient({ persistSession }) {
   const listeners = [];
   const session = () => (persistSession ? load().session : null);
+  // Like the real database: only sessions that passed two-step sign-in count.
+  const isAdmin = () => session()?.aal === 'aal2';
   const emit = (event, s) => listeners.forEach((fn) => fn(event, s));
+  const factorsOf = (db) => (db.factors ??= []);
+
+  const mfa = {
+    async getAuthenticatorAssuranceLevel() {
+      await delay();
+      const db = load();
+      const verified = factorsOf(db).some((f) => f.status === 'verified');
+      return { data: { currentLevel: db.session?.aal ?? null, nextLevel: verified ? 'aal2' : 'aal1' }, error: null };
+    },
+    async listFactors() {
+      await delay();
+      const all = copy(factorsOf(load()));
+      return { data: { all, totp: all.filter((f) => f.status === 'verified'), phone: [] }, error: null };
+    },
+    async enroll({ friendlyName }) {
+      await delay();
+      const db = load();
+      if (factorsOf(db).some((f) => f.status === 'verified') && db.session?.aal !== 'aal2') {
+        return fail('AAL2 required to enroll a new factor', 'insufficient_aal');
+      }
+      const factor = { id: uuid(), friendly_name: friendlyName, factor_type: 'totp', status: 'unverified',
+        created_at: now(), updated_at: now() };
+      db.factors.push(factor);
+      save(db);
+      return { data: { id: factor.id, type: 'totp', totp: { qr_code: DEMO_QR, secret: 'DEMO DEMO DEMO DEMO', uri: '' } }, error: null };
+    },
+    async unenroll({ factorId }) {
+      await delay();
+      const db = load();
+      db.factors = factorsOf(db).filter((f) => f.id !== factorId);
+      save(db);
+      return { data: { id: factorId }, error: null };
+    },
+    async challengeAndVerify({ factorId, code }) {
+      await delay();
+      const db = load();
+      const factor = factorsOf(db).find((f) => f.id === factorId);
+      if (!factor || !db.session) return fail('Factor not found', 'mfa_factor_not_found');
+      if (code !== DEMO_CODE) return fail('Invalid TOTP code entered (demo code is 123456)', 'mfa_verification_failed');
+      factor.status = 'verified';
+      db.session.aal = 'aal2';
+      save(db);
+      emit('MFA_CHALLENGE_VERIFIED', db.session);
+      return { data: {}, error: null };
+    },
+  };
 
   return {
-    from: (table) => new Query(table, Boolean(session())),
+    from: (table) => new Query(table, isAdmin()),
 
     async rpc(name, args = {}) {
       await delay();
       const handler = rpcs[name];
       if (!handler) return fail(`Demo mode doesn't know the function "${name}".`);
-      return handler(load(), args, Boolean(session()));
+      return handler(load(), args, isAdmin());
     },
 
     storage: {
@@ -214,6 +272,7 @@ export function makeClient({ persistSession }) {
     },
 
     auth: {
+      mfa,
       onAuthStateChange(fn) {
         listeners.push(fn);
         return { data: { subscription: { unsubscribe() {} } } };
@@ -228,12 +287,13 @@ export function makeClient({ persistSession }) {
           return { data: {}, error: { message: 'Invalid login credentials (demo password is "demo")' } };
         }
         const db = load();
-        db.session = { user: { id: 'demo-user', email } };
+        db.session = { user: { id: 'demo-user', email }, aal: 'aal1' };
         save(db);
         emit('SIGNED_IN', db.session);
         return { data: { user: db.session.user, session: db.session }, error: null };
       },
-      async signOut() {
+      async signOut({ scope = 'global' } = {}) {
+        if (scope === 'others') return { error: null }; // no other devices in demo mode
         const db = load();
         db.session = null;
         save(db);

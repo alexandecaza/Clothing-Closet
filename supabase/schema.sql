@@ -12,9 +12,10 @@
 --       the per-request cap, and stock — all server-side
 --     • look up the status (only the status) of a request by reference code
 --     • cannot read requests, contact info, or write anything else
---   authenticated users listed in public.admins:
+--   authenticated users listed in public.admins who passed two-step sign-in
+--   (password + authenticator-app code, session "aal2"):
 --     • full read/write on items, requests, settings, and item photos
---   authenticated users NOT in public.admins:
+--   everyone else signed in (not in public.admins, or password only):
 --     • nothing beyond what anon can do (sign-ups should also be disabled)
 -- =============================================================================
 
@@ -112,6 +113,12 @@ create trigger requests_touch before update on public.requests
 
 -- ---------------------------------------------------------------------------
 -- Helper: is the current user a coordinator?
+--
+-- Coordinators must use two-step sign-in: a password AND a 6-digit code from
+-- an authenticator app (Supabase MFA). Supabase marks a session that passed
+-- both as "aal2". A session that only used the password is "aal1" and gets
+-- nothing beyond what the public gets, so a stolen or guessed password alone
+-- can't open the admin, even by calling the API directly.
 -- ---------------------------------------------------------------------------
 
 create or replace function public.is_admin()
@@ -123,11 +130,31 @@ set search_path = ''
 as $$
   select exists (
     select 1 from public.admins where user_id = (select auth.uid())
-  );
+  )
+  and coalesce((select auth.jwt()) ->> 'aal', '') = 'aal2';
 $$;
 
 revoke all on function public.is_admin() from public;
 grant execute on function public.is_admin() to anon, authenticated;
+
+-- Is this account listed as a coordinator, whether or not it has finished
+-- two-step sign-in yet? Used only by the sign-in screen to decide whether to
+-- ask for a code. It grants no access by itself.
+create or replace function public.is_admin_account()
+returns boolean
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select exists (
+    select 1 from public.admins where user_id = (select auth.uid())
+  );
+$$;
+
+revoke all on function public.is_admin_account() from public;
+revoke all on function public.is_admin_account() from anon;
+grant execute on function public.is_admin_account() to authenticated;
 
 
 -- ---------------------------------------------------------------------------

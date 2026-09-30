@@ -63,14 +63,54 @@
       </form>
     </section>
 
+    <!-- Two-step sign-in: code from the authenticator app -->
+    <section class="auth-panel" id="view-mfa" hidden>
+      <form class="auth-card" id="mfa-form" novalidate>
+        <h1>Enter your code</h1>
+        <p class="muted">Open the authenticator app on your phone and type the 6-digit code it shows for this closet.</p>
+        <label class="field">
+          <span class="field-label">6-digit code</span>
+          <input class="code-input" name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" required>
+        </label>
+        <p class="form-error" id="mfa-error" role="alert"></p>
+        <button type="submit" class="btn btn-primary btn-block">Verify</button>
+        <button type="button" class="link-button" data-cancel-sign-in>Use a different account</button>
+        <p class="field-hint">Lost your phone? Ask whoever runs the closet to reset your two-step sign-in (README, "Lost phone").</p>
+      </form>
+    </section>
+
+    <!-- Two-step sign-in: first-time setup -->
+    <section class="auth-panel" id="view-enroll" hidden>
+      <form class="auth-card" id="enroll-form" novalidate>
+        <h1>Set up two-step sign-in</h1>
+        <p class="muted">Coordinators sign in with a password <strong>and</strong> a code from their phone, so a leaked password alone can't open families' contact details.</p>
+        <ol class="setup-steps">
+          <li>Install an authenticator app on your phone, such as Google Authenticator, Microsoft Authenticator or 2FAS.</li>
+          <li>In the app, add an account and scan this code:</li>
+        </ol>
+        <div class="qr" id="enroll-qr"></div>
+        <details class="secret-key">
+          <summary>Can't scan it? Type this key instead</summary>
+          <code id="enroll-secret"></code>
+        </details>
+        <label class="field">
+          <span class="field-label">3. Enter the 6-digit code the app shows</span>
+          <input class="code-input" name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" required>
+        </label>
+        <p class="form-error" id="enroll-error" role="alert"></p>
+        <button type="submit" class="btn btn-primary btn-block">Turn on and continue</button>
+        <button type="button" class="link-button" data-cancel-sign-in>Cancel and sign out</button>
+      </form>
+    </section>
+
     <!-- Set a new password after following a reset link -->
     <section class="auth-panel" id="view-recovery" hidden>
       <form class="auth-card" id="recovery-form" novalidate>
         <h1>Choose a new password</h1>
         <label class="field">
           <span class="field-label">New password</span>
-          <input type="password" name="password" autocomplete="new-password" minlength="8" required>
-          <span class="field-hint">At least 8 characters.</span>
+          <input type="password" name="password" autocomplete="new-password" minlength="12" maxlength="72" required>
+          <span class="field-hint">At least 12 characters. A few unrelated words works well.</span>
         </label>
         <p class="form-error" id="recovery-error" role="alert"></p>
         <button type="submit" class="btn btn-primary btn-block">Save password</button>
@@ -178,10 +218,16 @@
         <form class="panel" id="password-form" novalidate>
           <h2>Your account</h2>
           <p class="muted">Signed in as <strong id="account-email"></strong></p>
+          <p class="muted" id="mfa-status"></p>
           <label class="field">
             <span class="field-label">New password</span>
-            <input type="password" name="password" autocomplete="new-password" minlength="8" required>
-            <span class="field-hint">At least 8 characters.</span>
+            <input type="password" name="password" autocomplete="new-password" minlength="12" maxlength="72" required>
+            <span class="field-hint">At least 12 characters. A few unrelated words works well.</span>
+          </label>
+          <label class="field field-narrow">
+            <span class="field-label">Code from your authenticator app</span>
+            <input class="code-input" name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" required>
+            <span class="field-hint">Proves it's really you. Other devices are signed out afterwards.</span>
           </label>
           <p class="form-error" id="password-error" role="alert"></p>
           <button type="submit" class="btn">Change password</button>

@@ -13,6 +13,15 @@ const $ = (id) => document.getElementById(id);
 const arrivedFromResetLink = /type=recovery/.test(location.hash);
 
 const VIEWS = ['inventory', 'requests', 'settings'];
+const AUTH_SCREENS = ['login', 'mfa', 'enroll', 'recovery'];
+
+// Sign out automatically after this long without any clicks, taps or typing.
+const IDLE_LIMIT_MS = 30 * 60_000;
+const ACTIVITY_KEY = 'closet.admin.last-active';
+
+const MIN_PASSWORD = 12;
+const MAX_PASSWORD = 72; // Supabase Auth's limit
+const WEAK_PASSWORD_PARTS = ['password', 'passw0rd', '123456', 'qwerty', 'letmein', 'welcome', 'iloveyou', 'abc123', 'closet'];
 
 const state = {
   user: null,
@@ -29,14 +38,17 @@ const state = {
 
 let supabase;
 let loginCaptcha = null; // robot check on sign-in / password reset
+let afterMfa = null; // what to do once the 6-digit code checks out
+let enrollFactorId = null; // authenticator being set up on the enroll screen
+let recoveryStarted = false;
+let lastActiveMemo = 0;
 
 // ---------------------------------------------------------------------------
 // Screens
 // ---------------------------------------------------------------------------
 
 function showScreen(name) {
-  $('view-login').hidden = name !== 'login';
-  $('view-recovery').hidden = name !== 'recovery';
+  for (const s of AUTH_SCREENS) $(`view-${s}`).hidden = name !== s;
   $('view-denied').hidden = true;
   const inApp = VIEWS.includes(name);
   for (const v of VIEWS) $(`view-${v}`).hidden = v !== name;
@@ -76,26 +88,217 @@ function route() {
 // Auth
 // ---------------------------------------------------------------------------
 
-async function enterApp(user) {
-  state.user = user;
-  const { data: isAdmin, error } = await supabase.rpc('is_admin');
+// The one way into the admin. Checks the account is a coordinator and has
+// passed two-step sign-in, sending them to the right screen if not. (The
+// database makes the same checks on every request; see is_admin() in
+// supabase/schema.sql.)
+async function enterApp() {
+  state.user = null;
+  const { data: { session } } = await supabase.auth.getSession();
+  if (!session) {
+    showLogin();
+    return;
+  }
+  const { data: isAdminAccount, error } = await supabase.rpc('is_admin_account');
   if (error) {
     showLogin(friendlyError(error));
     return;
   }
-  if (!isAdmin) {
-    await supabase.auth.signOut();
+  if (!isAdminAccount) {
+    await supabase.auth.signOut({ scope: 'local' });
     showLogin("That account isn't set up as a coordinator. Ask whoever runs the closet to add you (README, step 5).");
     return;
   }
-  state.user = user;
-  $('account-email').textContent = user.email;
+
+  let aal;
+  try {
+    aal = await assuranceLevel();
+  } catch (err) {
+    showLogin(friendlyError(err));
+    return;
+  }
+  if (aal.currentLevel !== 'aal2') {
+    if (aal.nextLevel === 'aal2') showMfa(enterApp);
+    else await showEnroll();
+    return;
+  }
+
+  state.user = session.user;
+  markActive(true);
+  $('account-email').textContent = session.user.email;
   try {
     await loadAll();
   } catch (err) {
     toast(friendlyError(err), { tone: 'error' });
   }
   route();
+}
+
+async function cancelSignIn(message = '') {
+  await supabase.auth.signOut({ scope: 'local' });
+  showLogin(message);
+}
+
+// Returns a reason the password isn't good enough, or '' if it's fine.
+// Supabase Auth enforces its own minimum too (README, step 3).
+function passwordProblem(password, email = '') {
+  if (password.length < MIN_PASSWORD) {
+    return `Use at least ${MIN_PASSWORD} characters. A few unrelated words works well.`;
+  }
+  if (new TextEncoder().encode(password).length > MAX_PASSWORD) {
+    return `Use ${MAX_PASSWORD} characters or fewer.`;
+  }
+  const lower = password.toLowerCase();
+  const name = email.split('@')[0].toLowerCase();
+  if (name.length >= 3 && lower.includes(name)) {
+    return "Don't use your email address in your password.";
+  }
+  if (new Set(lower).size < 5 || WEAK_PASSWORD_PARTS.some((w) => lower.includes(w))) {
+    return 'That password is too easy to guess. Try a few unrelated words instead.';
+  }
+  return '';
+}
+
+// ---------------------------------------------------------------------------
+// Two-step sign-in (6-digit codes from an authenticator app)
+// ---------------------------------------------------------------------------
+
+async function assuranceLevel() {
+  const { data, error } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel();
+  if (error) throw error;
+  return data;
+}
+
+async function verifiedFactor() {
+  const { data, error } = await supabase.auth.mfa.listFactors();
+  if (error) throw error;
+  return data.totp.find((f) => f.status === 'verified') ?? null;
+}
+
+function readCode(input) {
+  return input.value.replace(/\D/g, '');
+}
+
+function codeError(err) {
+  if (err?.code === 'mfa_verification_failed' || /invalid.*(totp|code)/i.test(err?.message || '')) {
+    return "That code didn't work. Codes change every 30 seconds, so enter the one showing now.";
+  }
+  return friendlyError(err);
+}
+
+// Asks for the current code and upgrades this session to "aal2".
+async function verifyCode(code) {
+  const factor = await verifiedFactor();
+  if (!factor) throw new Error('Two-step sign-in isn’t set up for this account yet.');
+  const { error } = await supabase.auth.mfa.challengeAndVerify({ factorId: factor.id, code });
+  if (error) throw error;
+}
+
+function showMfa(next) {
+  afterMfa = next;
+  showScreen('mfa');
+  const form = $('mfa-form');
+  form.reset();
+  $('mfa-error').textContent = '';
+  form.code.focus();
+}
+
+async function showEnroll() {
+  showScreen('enroll');
+  const form = $('enroll-form');
+  form.reset();
+  $('enroll-error').textContent = '';
+  $('enroll-secret').textContent = '';
+  const qr = $('enroll-qr');
+  qr.innerHTML = '<span class="muted">Preparing…</span>';
+  enrollFactorId = null;
+  try {
+    await loadSettings().catch(() => {}); // closet name, shown in the authenticator app
+    // Clear out a setup that was started earlier but never finished.
+    const { data: factors, error: listError } = await supabase.auth.mfa.listFactors();
+    if (listError) throw listError;
+    for (const f of factors.all.filter((x) => x.status !== 'verified')) {
+      await supabase.auth.mfa.unenroll({ factorId: f.id });
+    }
+    const { data, error } = await supabase.auth.mfa.enroll({
+      factorType: 'totp',
+      friendlyName: 'Authenticator app',
+      issuer: state.settings.org_name,
+    });
+    if (error) throw error;
+    enrollFactorId = data.id;
+    const img = new Image(180, 180);
+    img.alt = 'QR code to scan with your authenticator app';
+    img.src = data.totp.qr_code;
+    qr.replaceChildren(img);
+    $('enroll-secret').textContent = data.totp.secret;
+    form.code.focus();
+  } catch (err) {
+    qr.replaceChildren();
+    $('enroll-error').textContent = friendlyError(err);
+  }
+}
+
+async function startRecovery() {
+  if (recoveryStarted) return;
+  recoveryStarted = true;
+  const showForm = () => {
+    showScreen('recovery');
+    $('recovery-form').password.focus();
+  };
+  try {
+    // A reset link proves access to the email, not the phone: ask for both.
+    const aal = await assuranceLevel();
+    if (aal.currentLevel !== 'aal2' && aal.nextLevel === 'aal2') {
+      showMfa(showForm);
+      return;
+    }
+  } catch (err) {
+    showLogin(friendlyError(err));
+    return;
+  }
+  showForm();
+}
+
+// ---------------------------------------------------------------------------
+// Automatic sign-out after inactivity (shared by all open admin tabs)
+// ---------------------------------------------------------------------------
+
+function markActive(force = false) {
+  const t = Date.now();
+  if (!force && t - lastActiveMemo < 10_000) return;
+  lastActiveMemo = t;
+  try {
+    localStorage.setItem(ACTIVITY_KEY, String(t));
+  } catch {
+    // Storage blocked: this tab still keeps its own clock.
+  }
+}
+
+function idleTooLong() {
+  let stored = 0;
+  try {
+    stored = Number(localStorage.getItem(ACTIVITY_KEY)) || 0;
+  } catch {
+    // Storage blocked
+  }
+  return Date.now() - Math.max(stored, lastActiveMemo) > IDLE_LIMIT_MS;
+}
+
+async function signOutIfIdle() {
+  if (!state.user || !idleTooLong()) return;
+  state.user = null;
+  await cancelSignIn('You were signed out after 30 minutes without activity.');
+}
+
+function wireIdleTimeout() {
+  for (const type of ['pointerdown', 'keydown', 'wheel', 'touchstart']) {
+    window.addEventListener(type, () => markActive(), { capture: true, passive: true });
+  }
+  setInterval(signOutIfIdle, 30_000);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') signOutIfIdle();
+  });
 }
 
 function wireAuth() {
@@ -138,8 +341,79 @@ function wireAuth() {
       return;
     }
     form.password.value = '';
-    await enterApp(data.user);
+    await enterApp();
   });
+
+  // Keep code boxes to digits, and send a full code without an extra tap.
+  for (const input of document.querySelectorAll('.code-input')) {
+    input.addEventListener('input', () => {
+      const digits = readCode(input).slice(0, 6);
+      if (input.value !== digits) input.value = digits;
+      const form = input.form;
+      if (digits.length === 6 && form.id !== 'password-form') {
+        const button = form.querySelector('[type=submit]');
+        if (!button.disabled) form.requestSubmit(button);
+      }
+    });
+  }
+
+  $('mfa-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const form = e.target;
+    const errorEl = $('mfa-error');
+    const code = readCode(form.code);
+    if (code.length !== 6) {
+      errorEl.textContent = 'Enter the 6-digit code from your authenticator app.';
+      return;
+    }
+    const button = form.querySelector('[type=submit]');
+    button.disabled = true;
+    errorEl.textContent = '';
+    try {
+      await verifyCode(code);
+    } catch (err) {
+      errorEl.textContent = codeError(err);
+      form.code.select();
+      return;
+    } finally {
+      button.disabled = false;
+    }
+    const next = afterMfa || enterApp;
+    afterMfa = null;
+    await next();
+  });
+
+  $('enroll-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const form = e.target;
+    const errorEl = $('enroll-error');
+    if (!enrollFactorId) {
+      await showEnroll();
+      return;
+    }
+    const code = readCode(form.code);
+    if (code.length !== 6) {
+      errorEl.textContent = 'Enter the 6-digit code your authenticator app shows.';
+      return;
+    }
+    const button = form.querySelector('[type=submit]');
+    button.disabled = true;
+    errorEl.textContent = '';
+    const { error } = await supabase.auth.mfa.challengeAndVerify({ factorId: enrollFactorId, code });
+    button.disabled = false;
+    if (error) {
+      errorEl.textContent = codeError(error);
+      form.code.select();
+      return;
+    }
+    enrollFactorId = null;
+    toast('Two-step sign-in is on. You’ll need a code from your phone each time you sign in.');
+    await enterApp();
+  });
+
+  for (const button of document.querySelectorAll('[data-cancel-sign-in]')) {
+    button.addEventListener('click', () => cancelSignIn());
+  }
 
   $('forgot').addEventListener('click', async () => {
     const email = $('login-form').email.value.trim();
@@ -168,20 +442,29 @@ function wireAuth() {
 
   $('recovery-form').addEventListener('submit', async (e) => {
     e.preventDefault();
-    const password = e.target.password.value;
+    const input = e.target.password;
     const errorEl = $('recovery-error');
-    if (password.length < 8) {
-      errorEl.textContent = 'Use at least 8 characters.';
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session) {
+      showLogin('That reset link has expired. Choose “Forgot password?” to get a new one.');
       return;
     }
-    const { data, error } = await supabase.auth.updateUser({ password });
+    const problem = passwordProblem(input.value, session.user.email);
+    if (problem) {
+      errorEl.textContent = problem;
+      return;
+    }
+    const { error } = await supabase.auth.updateUser({ password: input.value });
     if (error) {
       errorEl.textContent = friendlyError(error);
       return;
     }
+    input.value = '';
+    // If someone else knew the old password, kick them out.
+    await supabase.auth.signOut({ scope: 'others' });
     history.replaceState(null, '', location.pathname);
-    toast('Password saved.');
-    await enterApp(data.user);
+    toast('Password saved. Any other devices were signed out.');
+    await enterApp();
   });
 
   $('sign-out').addEventListener('click', async () => {
@@ -997,6 +1280,19 @@ function renderSettings() {
   form.max_items_per_request.value = state.settings.max_items_per_request;
   $('settings-error').textContent = '';
   renderBotStatus();
+  renderMfaStatus();
+}
+
+async function renderMfaStatus() {
+  const el = $('mfa-status');
+  try {
+    const factor = await verifiedFactor();
+    el.textContent = factor
+      ? `Two-step sign-in is on (authenticator app, added ${formatDate(factor.created_at)}).`
+      : '';
+  } catch {
+    el.textContent = '';
+  }
 }
 
 async function renderBotStatus() {
@@ -1061,20 +1357,39 @@ function wireSettings() {
 
   $('password-form').addEventListener('submit', async (e) => {
     e.preventDefault();
-    const input = e.target.password;
+    const form = e.target;
+    const input = form.password;
     const errorEl = $('password-error');
-    if (input.value.length < 8) {
-      errorEl.textContent = 'Use at least 8 characters.';
+    const problem = passwordProblem(input.value, state.user?.email);
+    if (problem) {
+      errorEl.textContent = problem;
       return;
     }
-    const { error } = await supabase.auth.updateUser({ password: input.value });
-    if (error) {
-      errorEl.textContent = friendlyError(error);
+    const code = readCode(form.code);
+    if (code.length !== 6) {
+      errorEl.textContent = 'Enter the 6-digit code from your authenticator app.';
+      form.code.focus();
       return;
+    }
+    const button = form.querySelector('[type=submit]');
+    button.disabled = true;
+    errorEl.textContent = '';
+    try {
+      // Someone at an unlocked, signed-in computer can't change the password
+      // without the coordinator's phone.
+      await verifyCode(code);
+      const { error } = await supabase.auth.updateUser({ password: input.value });
+      if (error) throw error;
+      await supabase.auth.signOut({ scope: 'others' });
+    } catch (err) {
+      errorEl.textContent = codeError(err);
+      return;
+    } finally {
+      button.disabled = false;
     }
     errorEl.textContent = '';
-    input.value = '';
-    toast('Password changed.');
+    form.reset();
+    toast('Password changed. Any other devices were signed out.');
   });
 }
 
@@ -1083,11 +1398,14 @@ function wireSettings() {
 // ---------------------------------------------------------------------------
 
 async function init() {
+  // Checked before anything on the page can count as activity.
+  const idleSinceLastVisit = idleTooLong();
   wireAuth();
   wireInventory();
   wireItemDialog();
   wireRequests();
   wireSettings();
+  wireIdleTimeout();
   window.addEventListener('hashchange', route);
 
   showDevBanner();
@@ -1101,15 +1419,17 @@ async function init() {
 
   // Don't await other Supabase calls inside this callback (it can deadlock).
   supabase.auth.onAuthStateChange((event) => {
-    if (event === 'PASSWORD_RECOVERY') showScreen('recovery');
+    if (event === 'PASSWORD_RECOVERY') setTimeout(startRecovery, 0);
     if (event === 'SIGNED_OUT' && state.user) showLogin();
   });
 
   const { data: { session } } = await supabase.auth.getSession();
   if (session && arrivedFromResetLink) {
-    showScreen('recovery');
+    await startRecovery();
+  } else if (session && idleSinceLastVisit) {
+    await cancelSignIn('You were signed out after 30 minutes without activity.');
   } else if (session) {
-    await enterApp(session.user);
+    await enterApp();
   } else {
     showLogin();
   }
